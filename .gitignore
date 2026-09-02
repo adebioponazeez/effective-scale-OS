@@ -1,0 +1,25 @@
+# Runtime data
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.snapshot
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Tooling
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
