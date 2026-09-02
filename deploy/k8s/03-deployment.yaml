@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: effective-scale
+  namespace: effective-scale
+  labels:
+    app: effective-scale
+spec:
+  replicas: 1            # single-writer: keep 1 until the Postgres/leader adapter lands (docs/08)
+  selector:
+    matchLabels:
+      app: effective-scale
+  template:
+    metadata:
+      labels:
+        app: effective-scale
+    spec:
+      containers:
+        - name: kernel
+          image: effective-scale-os:0.4.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--store"
+            - "/data/effective_scale.db"
+            - "--listen"
+            - "0.0.0.0:8080"
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: effective-scale-secrets
+            - configMapRef:
+                name: effective-scale-config
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          readinessProbe:
+            httpGet: { path: /v1/health/ready, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /v1/health/live, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: effective-scale-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: effective-scale-data
+  namespace: effective-scale
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+--- 
+apiVersion: v1
+kind: Service
+metadata:
+  name: effective-scale
+  namespace: effective-scale
+spec:
+  selector:
+    app: effective-scale
+  ports:
+    - { port: 8080, targetPort: http }
+  type: ClusterIP

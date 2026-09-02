@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: effective-scale-secrets
+  namespace: effective-scale
+type: Opaque
+stringData:
+  # REPLACE with real secrets (>=32 random bytes). Prefer external-secrets in production.
+  ES_AUTH_SECRET: "change-me-32-byte-random-secret!!"
+  ES_ADMIN_TOKEN: "change-me-admin-bootstrap-32b!"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: effective-scale-config
+  namespace: effective-scale
+data:
+  ES_LISTEN: "0.0.0.0:8080"
+  ES_STORE: "/data/effective_scale.db"
+  ES_LOG_LEVEL: "info"
+  ES_RATE_LIMIT: "6000"
+  ES_EVENT_PARTITIONS: "4"

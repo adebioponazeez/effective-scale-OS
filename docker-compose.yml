@@ -1,0 +1,20 @@
+services:
+  kernel:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      ES_AUTH_SECRET: "change-me-to-a-32-byte-random-secret!"
+      ES_ADMIN_TOKEN: "change-me-too"
+    volumes:
+      - es-data:/data
+    command: ["--store", "/data/effective_scale.db", "--listen", "0.0.0.0:8080", "--demo"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/v1/health/ready', timeout=2).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  es-data:

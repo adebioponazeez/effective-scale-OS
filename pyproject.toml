@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "effective-scale-os"
+version = "0.4.0"
+description = "Production-grade kernel for workloads: scheduling, workflows, events, scaling, observability."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = []  # zero runtime dependencies — by design (supply-chain + portability)
+
+[project.scripts]
+effective-scale = "effective_scale.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
