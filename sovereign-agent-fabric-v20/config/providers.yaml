@@ -1,0 +1,10 @@
+models:
+  kimi_k3: {adapter: saf.models.kimi.KimiK3Adapter, modes: [remote, local, openrouter]}
+  openrouter: {adapter: saf.models.openrouter.OpenRouterAdapter}
+  abacus_ai: {adapter: saf.models.abacus.AbacusAIAdapter}
+agents:
+  pi: {adapter: saf.agents.cli.PiAdapter}
+  cursor_cli: {adapter: saf.agents.cli.CursorCliAdapter}
+  codex_cli: {adapter: saf.agents.cli.CodexCliAdapter}
+  opencode: {adapter: saf.agents.cli.OpenCodeAdapter}
+  aider: {adapter: saf.agents.cli.AiderAdapter}

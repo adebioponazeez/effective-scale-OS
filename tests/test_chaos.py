@@ -99,6 +99,43 @@ class KernelCrashTest(unittest.TestCase):
             self.assertIn(status, (200, 503))
             h.stop()
 
+    def test_idle_event_bus_does_not_trip_watchdog(self):
+        """Regression: an idle-but-alive event bus must never kill the kernel.
+
+        The event loop previously marked progress only when it pumped at least
+        one event; after the first publish, an idle bus stopped marking and the
+        watchdog (stall = watchdog_stall) committed suicide at exactly 30 s —
+        i.e. every long-running kernel died after its first burst of events.
+        """
+        import time
+        from unittest.mock import patch
+
+        from effective_scale.adapters import MemoryStore
+        from effective_scale.core.kernel import Config, Kernel
+        from effective_scale.ports.logger import MemLogger
+
+        with patch("os._exit", side_effect=AssertionError("watchdog tried to exit")):
+            h = Harness(MemoryStore(), config=Config(
+                store_path=":memory:", auth_secret="x" * 20,
+                scheduler_interval=0.02, workflow_interval=0.02,
+                event_interval=0.02, scale_interval=0.02,
+                heartbeat_ttl=1.0, watchdog_stall=0.5,
+            ), start_api=False)
+            try:
+                # publish once so the "events" loop enters the progress map
+                h.kernel.bus.publish("t", key="k", payload={"v": 1}, schema_version=1)
+                ok = wait_until(lambda: "events" in h.kernel._last_progress, timeout=5.0)
+                self.assertTrue(ok, "event loop never marked progress")
+                # now go idle, far past the watchdog threshold
+                time.sleep(1.5)
+                self.assertFalse(h.kernel._stop.is_set(), "kernel was stopped by watchdog")
+                stalls = [r for r in h.kernel.logger.records
+                          if r.get("event") == "kernel.watchdog.stall"]
+                self.assertEqual(stalls, [])
+                self.assertTrue(h.kernel.leader.is_leader())
+            finally:
+                h.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

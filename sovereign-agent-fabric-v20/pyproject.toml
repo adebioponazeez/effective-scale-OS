@@ -1,0 +1,18 @@
+[project]
+name = "sovereign-agent-fabric"
+version = "0.1.0"
+description = "Capability-first agentic execution fabric for PCOS/V20"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.8", "PyYAML>=6.0"]
+
+[project.scripts]
+saf = "saf.cli.main:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["saf*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

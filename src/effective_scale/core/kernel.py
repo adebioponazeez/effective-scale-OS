@@ -92,6 +92,7 @@ class Kernel:
             self.leader = LeaderElection(
                 self.store, self.config.leader_holder, ttl=self.config.heartbeat_ttl,
                 heartbeat=self.config.heartbeat_interval, clock=self.clock, logger=self.logger,
+                on_progress=lambda: self._mark("leader"),
             )
         self._wq: queue.Queue = queue.Queue()
         self._stop = threading.Event()
@@ -103,6 +104,16 @@ class Kernel:
         self._cron_gates: dict[str, float] = {}
         self._cron_cache: dict[str, CronSchedule] = {}
         self._consumers: list[ConsumerGroup] = []
+        # A loop is only "stalled" if it missed its own cadence, not the global
+        # stall threshold: a 60 s cron loop would otherwise look dead at 30 s.
+        self._loop_intervals = {
+            "scheduler": self.config.scheduler_interval,
+            "scaler": self.config.scale_interval,
+            "workflow": self.config.workflow_interval,
+            "events": self.config.event_interval,
+            "cron": self.config.cron_interval,
+            "leader": self.config.heartbeat_interval,
+        }
 
         for name in ("api", "scheduler", "scaler", "workflow", "events", "cron", "leader", "watchdog"):
             self.metrics.gauge(f"loop.{name}.last_ts", f"last progress of {name} loop")
@@ -116,7 +127,6 @@ class Kernel:
         self._write(lambda: self.bus.recover())
         self._write(lambda: self.engine.recover())
         self._write(lambda: self.leader.acquire())
-        self._mark("leader")
         self._start_thread("writer", self._writer_loop)
         self._start_thread("scheduler", self._scheduler_loop)
         self._start_thread("scaler", self._scaler_loop)
@@ -125,7 +135,13 @@ class Kernel:
         self._start_thread("cron", self._cron_loop)
         self._start_thread("watchdog", self._watchdog_loop)
         if not isinstance(self.leader, SingleLeader):
+            # A real leader loop heartbeats and reports progress via on_progress;
+            # SingleLeader has no thread, so no "leader" stall can exist.
+            self._mark("leader")
             self._start_thread("leader", self.leader.run)
+        else:
+            # SingleLeader is by definition always-leader: no loop to monitor.
+            self._last_progress.pop("leader", None)
 
     def stop(self) -> None:
         self.logger.log("kernel.shutdown_begin", info=True)
@@ -317,9 +333,11 @@ class Kernel:
                 for consumer in self._consumers:
                     total += consumer.pump_once()
                 self.metrics.gauge("eventbus.pending").set(self.bus.lag_in_memory())
-                if total:
-                    self._mark("events")
             finally:
+                # Progress must be marked on every iteration, not only when
+                # events were pumped: an idle-but-alive bus (normal production
+                # state) would otherwise trip the watchdog and kill the kernel.
+                self._mark("events")
                 self.clock.sleep(self.config.event_interval)
 
     def _cron_loop(self) -> None:
@@ -359,7 +377,12 @@ class Kernel:
                 for name, ts in list(self._last_progress.items()):
                     if name in ("writer", "watchdog"):
                         continue
-                    if now - ts > self.config.watchdog_stall:
+                    # Stall threshold = max(global stall, 3× the loop's own
+                    # interval): a legitimately slow loop (e.g. cron=60 s) must
+                    # not be declared stalled by a shorter global threshold.
+                    interval = self._loop_intervals.get(name, 0.0)
+                    limit = max(self.config.watchdog_stall, 3.0 * interval)
+                    if now - ts > limit:
                         self.logger.log("kernel.watchdog.stall", fatal=True,
                                         loop=name, stalled_seconds=now - ts)
                         # fail fast: supervisor restart (k8s/systemd) is the recovery path

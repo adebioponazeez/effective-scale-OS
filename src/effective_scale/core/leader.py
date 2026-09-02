@@ -16,7 +16,7 @@ from ..domain.ids import new_nonce
 
 class LeaderElection:
     def __init__(self, store, holder_id: str, *, ttl: float = 5.0, heartbeat: float = 1.0,
-                 clock=None, logger=None, on_lost=None):
+                 clock=None, logger=None, on_lost=None, on_progress=None):
         self.store = store
         self.holder_id = holder_id
         self.ttl = ttl
@@ -24,6 +24,7 @@ class LeaderElection:
         self.clock = clock or time
         self.logger = logger
         self.on_lost = on_lost
+        self.on_progress = on_progress
         self._nonce = ""
         self._is_leader = False
         self._terms = 1
@@ -82,7 +83,11 @@ class LeaderElection:
 
     # ---- loop ----------------------------------------------------------------
     def run(self) -> None:
-        """Blocking loop for a dedicated thread: acquire, then heartbeat until lost/stopped."""
+        """Blocking loop for a dedicated thread: acquire, then heartbeat until lost/stopped.
+
+        `on_progress` fires once per iteration — even while waiting to acquire —
+        so a live but un-elected standby never looks stalled to a watchdog.
+        """
         while not self._stop.is_set():
             if not self._is_leader:
                 if self.acquire():
@@ -90,11 +95,18 @@ class LeaderElection:
                         self.logger.log("leader.acquired", info=True, holder=self.holder_id)
                 else:
                     self.clock.sleep(self.heartbeat)
+                    self._tick()
                     continue
             if not self.renew():
+                self._tick()
                 continue
             self._stop.wait(self.heartbeat)
+            self._tick()
         self._demote("shutdown")
+
+    def _tick(self) -> None:
+        if self.on_progress:
+            self.on_progress()
 
     def stop(self) -> None:
         self._stop.set()
