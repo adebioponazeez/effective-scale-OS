@@ -2,16 +2,6 @@
   "note": "Audited findings accepted for now. This list may only shrink: when a check stops firing, delete its entry (tests/test_audit.py fails on stale entries). Anything not listed here is an unexpected finding and fails the audit and the kernel suite.",
   "gaps": [
     {
-      "id": "C-caps:unimplemented:cap://research/web",
-      "severity": "medium",
-      "check": "capabilities",
-      "title": "cap://research/web has no implementation",
-      "detail": "Declared capability with no runtime; needs network access and a provider boundary.",
-      "plan": "Wire the dormant model providers (saf/models) behind a research runtime with explicit network policy.",
-      "revisit": "when provider credentials exist",
-      "exit_criteria": "A registered resource claims cap://research/web and the network policy is enforced and tested."
-    },
-    {
       "id": "C-caps:unimplemented:cap://interaction/browser",
       "severity": "medium",
       "check": "capabilities",

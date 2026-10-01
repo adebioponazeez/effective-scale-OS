@@ -83,7 +83,7 @@ Product versions: kernel `0.5.0` · saf `0.2.0` — declared once, enforced by `
 | `cap://software/agent/execute` | agent://pi, agent://cursor-cli, agent://codex-cli, agent://opencode, agent://aider | False |
 | `cap://general/agent/execute` | agent://pi, agent://cursor-cli, agent://codex-cli, agent://opencode, agent://aider | False |
 | `cap://software/git/operate` | saf://git | True |
-| `cap://research/web` | **none — declared unimplemented** | False |
+| `cap://research/web` | saf://web | True |
 | `cap://interaction/browser` | **none — declared unimplemented** | False |
 
 ## Claims (each has a check that can fail — see `tools/audit.py`)
@@ -105,13 +105,3 @@ Product versions: kernel `0.5.0` · saf `0.2.0` — declared once, enforced by `
 
 | Module | Why it is dormant | Revisit when |
 |---|---|---|
-| `sovereign-agent-fabric-v20/saf/models/kimi.py` | model provider boundary; needs provider credentials to be live | when a provider key is configured (docs/03-adapter-contracts.md) |
-| `sovereign-agent-fabric-v20/saf/models/openrouter.py` | model provider boundary; needs provider credentials to be live | when a provider key is configured |
-| `sovereign-agent-fabric-v20/saf/models/abacus.py` | model provider boundary; needs provider credentials to be live | when a provider key is configured |
-| `sovereign-agent-fabric-v20/saf/models/base.py` | abstract model-provider boundary; implementations are dormant until credentials exist | when the first provider is configured (kimi/openrouter/abacus) |
-| `sovereign-agent-fabric-v20/saf/economy/scoring.py` | economics model from the source slice; not yet consumed by ranking | when observed resource stats feed routing decisions |
-| `sovereign-agent-fabric-v20/saf/transport/grpc.py` | explicitly deferred by ADR-002 (no mandatory gRPC in V0/V1) | V2 remote workers/GPU paths |
-| `sovereign-agent-fabric-v20/saf/transport/local.py` | in-process transport helper; the executor calls runtimes directly | if a shared transport interface is introduced |
-| `src/effective_scale/core/resilience.py` | circuit breaker/bulkhead/retry library: implemented and tested, not wired into kernel loops | first consumer is the API store path or an external adapter; wire or delete |
-| `sovereign-agent-fabric-v20/config/policy.yaml` | declarative policy exemplar; policy is code (saf/core/policy.py) today | when policy becomes operator-configurable |
-| `sovereign-agent-fabric-v20/config/providers.yaml` | declarative provider registry exemplar; providers are code today | when provider keys arrive with the model mesh |

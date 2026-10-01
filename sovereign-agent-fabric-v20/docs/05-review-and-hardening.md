@@ -167,6 +167,17 @@ The numbers in §6 are a point-in-time record of slice 2. Live numbers now come 
   (fixed subcommands, no shell, bounded messages, read-only unless a message is supplied),
   registered in the default registry: 8 of 10 declared capabilities are now satisfied and the
   first entry left `ontology/known-gaps.json` — the ledger may only shrink. SAF suite: 90 tests.
-- Still open for SAF: `cap://research/web` and `cap://interaction/browser` have no runtime (both
-  need a network policy boundary first), and the dormant provider/model modules await credentials —
-  tracked in `ontology/known-gaps.json` and the root `GAP-AUDIT.md`.
+- **`cap://research/web` is implemented** as `saf://web` behind a deny-by-default
+  `NetworkPolicy` (scheme/host/port allowlists, SSRF address checks, byte and time bounds,
+  redirects re-validated per hop). Nothing is reachable until `SAF_NETWORK_ALLOW` names hosts.
+  The compiler now carries caller-supplied URLs into `constraints.urls`.
+- **The dormant inventory is empty (10 → 0).** Deleted as pure inventory: `models/kimi.py` and
+  `models/abacus.py` (8-line stubs returning canned text, claiming capabilities that were never
+  declared), `economy/scoring.py` (no callers), `transport/{grpc,local}.py` (a comment file and a
+  3-line shim), `config/{policy,providers}.yaml` (never read). `models/openrouter.py` and
+  `models/base.py` are **wired**: `build_providers()` registers the provider the moment
+  `OPENROUTER_API_KEY` exists, so no code change is needed when credentials arrive. A new audit
+  check (`C-dormant:missing|stale`) makes the inventory self-policing — it immediately flagged the
+  provider entries the moment they became reachable, which is how they were removed rather than left.
+- Still open for SAF: `cap://interaction/browser` (needs the trust pipeline) — the last entry in
+  `ontology/known-gaps.json`.

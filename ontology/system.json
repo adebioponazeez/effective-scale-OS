@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "purpose": "Machine-readable ontology for effective-scale-OS + SAF. tools/audit.py checks the code against this file: states, transitions, entities, invariants, capabilities and claims. Drift fails the audit, and the audit runs in the kernel test suite.",
+  "purpose": "Machine-readable ontology for effective-scale-OS + SAF. tools/audit.py checks the code against this file: states, transitions, entities, invariants, capabilities and claims. Drift fails the audit, and the audit runs in the kernel test suite.  Dormant inventory is empty: modules are wired into production or deleted, never left as inventory.",
   "product_version": {
     "kernel": "0.5.0",
     "saf": "0.2.0"
@@ -637,10 +637,10 @@
     },
     {
       "id": "cap://research/web",
-      "satisfied_by": [],
-      "deterministic": false,
-      "unimplemented": true,
-      "note": "declared intent; needs a network-capable runtime"
+      "satisfied_by": [
+        "saf://web"
+      ],
+      "deterministic": true
     },
     {
       "id": "cap://interaction/browser",
@@ -712,56 +712,5 @@
       "severity": "high"
     }
   ],
-  "dormant": [
-    {
-      "module": "sovereign-agent-fabric-v20/saf/models/kimi.py",
-      "reason": "model provider boundary; needs provider credentials to be live",
-      "revisit": "when a provider key is configured (docs/03-adapter-contracts.md)"
-    },
-    {
-      "module": "sovereign-agent-fabric-v20/saf/models/openrouter.py",
-      "reason": "model provider boundary; needs provider credentials to be live",
-      "revisit": "when a provider key is configured"
-    },
-    {
-      "module": "sovereign-agent-fabric-v20/saf/models/abacus.py",
-      "reason": "model provider boundary; needs provider credentials to be live",
-      "revisit": "when a provider key is configured"
-    },
-    {
-      "module": "sovereign-agent-fabric-v20/saf/models/base.py",
-      "reason": "abstract model-provider boundary; implementations are dormant until credentials exist",
-      "revisit": "when the first provider is configured (kimi/openrouter/abacus)"
-    },
-    {
-      "module": "sovereign-agent-fabric-v20/saf/economy/scoring.py",
-      "reason": "economics model from the source slice; not yet consumed by ranking",
-      "revisit": "when observed resource stats feed routing decisions"
-    },
-    {
-      "module": "sovereign-agent-fabric-v20/saf/transport/grpc.py",
-      "reason": "explicitly deferred by ADR-002 (no mandatory gRPC in V0/V1)",
-      "revisit": "V2 remote workers/GPU paths"
-    },
-    {
-      "module": "sovereign-agent-fabric-v20/saf/transport/local.py",
-      "reason": "in-process transport helper; the executor calls runtimes directly",
-      "revisit": "if a shared transport interface is introduced"
-    },
-    {
-      "module": "src/effective_scale/core/resilience.py",
-      "reason": "circuit breaker/bulkhead/retry library: implemented and tested, not wired into kernel loops",
-      "revisit": "first consumer is the API store path or an external adapter; wire or delete"
-    },
-    {
-      "module": "sovereign-agent-fabric-v20/config/policy.yaml",
-      "reason": "declarative policy exemplar; policy is code (saf/core/policy.py) today",
-      "revisit": "when policy becomes operator-configurable"
-    },
-    {
-      "module": "sovereign-agent-fabric-v20/config/providers.yaml",
-      "reason": "declarative provider registry exemplar; providers are code today",
-      "revisit": "when provider keys arrive with the model mesh"
-    }
-  ]
+  "dormant": []
 }

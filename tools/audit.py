@@ -402,6 +402,24 @@ def check_dead_modules(ctx) -> list[Finding]:
         findings.append(Finding(
             "dead_modules", f"C-deadcode:{rel}", "medium",
             "module is not reachable from production entry points", f"{rel}: {detail}"))
+
+    # Dormancy must stay honest: the ledger may only shrink, so an entry that no longer
+    # describes reality (file gone, or module now wired into production) is a finding.
+    by_rel = {str(path.relative_to(ROOT)): name for name, path in modules.items()}
+    for rel, entry in sorted(dormant.items()):
+        if not (ROOT / rel).exists():
+            findings.append(Finding(
+                "dead_modules", f"C-dormant:missing:{rel}", "high",
+                "declared dormant but the file does not exist",
+                f"{rel}: remove the entry or restore the module"))
+            continue
+        name = by_rel.get(rel)
+        if name and name in prod_reachable:
+            findings.append(Finding(
+                "dead_modules", f"C-dormant:stale:{rel}", "medium",
+                "declared dormant but reachable from production code",
+                f"{rel} is wired into production; delete its dormant entry "
+                f"(the inventory may only shrink)"))
     return findings
 
 

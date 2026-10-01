@@ -97,6 +97,30 @@ class AuditTest(unittest.TestCase):
             ghost.unlink()
         self.assertTrue(any("ghost_version" in f.id for f in findings), [f.id for f in findings])
 
+    def test_dormant_entries_that_no_longer_describe_reality_are_reported(self):
+        """Dormancy is a schedule, not a state: the ledger must shrink when modules move."""
+        import json as _json
+
+        ontology = audit.load_ontology()
+        original = list(ontology["dormant"])
+        try:
+            # (a) an entry whose file is gone
+            ontology["dormant"] = original + [{"module": "src/effective_scale/ghost.py",
+                                               "reason": "deleted long ago",
+                                               "revisit": "never"}]
+            missing = audit.check_dead_modules({"ontology": ontology})
+            self.assertTrue(any("C-dormant:missing" in f.id for f in missing),
+                            [f.id for f in missing])
+
+            # (b) an entry for a module that is now wired into production
+            ontology["dormant"] = original + [{"module": "src/effective_scale/core/scheduler.py",
+                                               "reason": "was unused once",
+                                               "revisit": "now"}]
+            stale = audit.check_dead_modules({"ontology": ontology})
+            self.assertTrue(any("C-dormant:stale" in f.id for f in stale), [f.id for f in stale])
+        finally:
+            _json.dumps(original)  # untouched on disk; nothing to restore
+
     def test_operations_check_detects_a_missing_probe(self):
         """Supervision wiring is a requirement, not a nicety: remove it and the audit must fire."""
         compose = ROOT / "docker-compose.yml"

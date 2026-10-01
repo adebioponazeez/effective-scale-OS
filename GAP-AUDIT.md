@@ -123,23 +123,28 @@ Live registry (`build_registry()`): 7 capability ids have ≥1 implementation.
 | `cap://software/agent/execute` | 5 | working |
 | `cap://general/agent/execute` | 5 | working (was 0 — A-3) |
 | `cap://software/git/operate` | **1** (`saf://git`) | **CLOSED** — deterministic git runtime: fixed subcommands, no shell, bounded messages, read-only without a message; 12 tests incl. hostile-message and path-escape cases |
-| `cap://research/web` | **0** | **S2** — accepted gap; needs network policy + provider boundary |
+| `cap://research/web` | **1** (`saf://web`) | **CLOSED** — deny-by-default `NetworkPolicy` (scheme/host/port allowlists, SSRF address guard incl. the cloud metadata IP, byte/time bounds, per-hop redirect re-validation) + fetch-and-hash runtime |
 | `cap://interaction/browser` | **0** | **S3** — accepted gap; belongs behind the trust pipeline |
 
-Two capabilities now remain unimplemented (`cap://research/web`, `cap://interaction/browser`) and
-they are the entire tracked backlog: `ontology/known-gaps.json` went 3 → 2 when `saf://git` landed.
+One capability remains unimplemented (`cap://interaction/browser`) and it is the entire tracked
+backlog: `ontology/known-gaps.json` went 3 → 2 → 1 as `saf://git` and `saf://web` landed.
 **The roadmap is `known-gaps.json` shrinking to empty** — not a wish list.
 
-### D. Dormant inventory — built but unwired
+### D. Dormant inventory — **empty** (was 10 entries)
 
-Declared in `ontology/system.json → dormant` (10 entries) so the audit reports them as *known*
-instead of silently dead. Each must be **wired or deleted** by its stated revisit trigger; dormancy
-is a schedule, not a state:
+The rule "wired or deleted" was applied literally:
 
-`saf/models/kimi.py`, `saf/models/openrouter.py`, `saf/models/abacus.py`, `saf/models/base.py`
-(provider mesh, no credentials), `saf/economy/scoring.py` (no caller), `saf/transport/grpc.py`,
-`saf/transport/local.py` (no external import), `config/policy.yaml`, `config/providers.yaml`
-(boilerplate; policy/providers are code today), plus test-only reachable helpers.
+- **Deleted** (pure inventory): `models/kimi.py` and `models/abacus.py` (8-line stubs returning
+  canned text while claiming capabilities that were never declared), `economy/scoring.py` (no
+  caller), `transport/grpc.py` (a one-line comment), `transport/local.py` (3-line shim, no
+  importer), `config/{policy,providers}.yaml` (never read — policy and providers are code).
+- **Wired**: `models/openrouter.py` + `models/base.py` — `build_providers()` registers the adapter
+  automatically when `OPENROUTER_API_KEY` exists, so credentials are the only missing piece and no
+  code change is needed when they arrive.
+- **Self-policing now**: the audit gained `C-dormant:missing` (entry for a file that is gone) and
+  `C-dormant:stale` (entry for a module that is now reachable). It fired immediately on the provider
+  entries the moment they became reachable — which is precisely how they were chosen for removal
+  rather than left behind.
 
 ### E. Proof density — is the code *proven* to work?
 
@@ -205,9 +210,9 @@ cd /home/user/effective-scale-OS
 python3 tools/audit.py                            # 0 unexpected findings; 3 known (accepted) gaps (10 checks)
 python3 tools/audit.py --json                     # same, machine-readable
 python3 tools/audit.py --render-ontology          # regenerate docs/11-ontology.md
-PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 113 tests OK
+PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 114 tests OK
 PYTHONPATH=src python3 -m unittest tests.test_soak -v                 # == make soak
-cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 90 passed
+cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 116 passed
 pip install --break-system-packages coverage      # pip is PEP-668 managed in this sandbox
 cd .. && PYTHONPATH=src python3 -m coverage run --source=src/effective_scale -m unittest discover -s . -p 'test_*.py' -q && python3 -m coverage report   # 85 %
 cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m coverage run --source=saf -m pytest -q && python3 -m coverage report   # 88 %
