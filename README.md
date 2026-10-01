@@ -86,8 +86,7 @@ now a build artifact you can run, not a document that can go missing.
 | 1 | S2 | **Capability backlog**: `cap://research/web` and `cap://interaction/browser` have 0 implementations (git is now real) | These two are the entire roadmap; both need a network boundary before they can be trusted | Land web behind an explicit network policy with a provider boundary, then browser behind the trust pipeline |
 | 2 | S3 | **10 dormant modules** (model providers, `economy/scoring.py`, `transport/{grpc,local}.py`, `config/*.yaml`) | Built-but-unwired code is inventory that looks like capability | Wire or delete by the declared revisit trigger |
 | 3 | S3 | **CI does not gate on GitHub** — `.github/workflows/ci.yml` is ignored/untracked (token lacks `workflows` scope); PR #2 says "no checks reported". Tracked pipeline now runs `make audit` + `make soak` too | Local-only acceptance is a habit, not a guarantee | Activate the tracked `deploy/ci/ci.yml` via a token with the `workflows` scope or the Actions UI |
-| 4 | S3 | **`PyYAML` declared but never imported** in SAF (kernel is genuinely dependency-free; SAF does use `pydantic` for contracts) | Unused dependency in a supply-chain-conscious project | Drop it, or land the config loader that uses it |
-| 5 | S3 | **Weakest covered units** remain `core/workflow.py` 75 %, `core/leader.py` 75 %, `transport/effective_scale.py` 75 % | The workflow engine is the biggest unreached surface (120 missed stmts) | Target the uncovered branches: recovery paths, cancel/cancel-during-dispatch, retry boundaries |
+| 4 | S3 | **Weakest covered units** remain `core/workflow.py` 75 %, `core/leader.py` 75 %, `transport/effective_scale.py` 75 % | The workflow engine is the biggest unreached surface (120 missed stmts) | Target the uncovered branches: recovery paths, cancel/cancel-during-dispatch, retry boundaries |
 
 ## 6. What to do differently to make it run well
 
@@ -148,7 +147,8 @@ GAP-AUDIT.md     Exhaustive evidence-anchored gap audit and reproduction command
 - Worker dispatch is **pull-based** (ADR-006): the kernel never pushes work, so "no worker polling"
   looks like slow progress until node/workflow timeouts fire — visible in `/v1/attempts` and `/v1/status`.
 - The kernel is **stdlib-only by contract** (audited by `C-stdlib`). The SAF subproject is not: it
-  uses `pydantic` for its contracts (genuinely used) and declares `PyYAML` (currently unused).
+  uses `pydantic` for its contracts — one dependency, genuinely used. `PyYAML` was declared and
+  never imported; it was removed rather than left as inventory.
 - The reference implementation is **Python** because the Go toolchain cannot be provisioned in this
   environment; `docs/10-go-porting-blueprint.md` maps every module to idiomatic stdlib-Go.
 - Shedding is **by design**: under a saturated writer backlog or an open breaker, client mutations
