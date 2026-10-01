@@ -456,11 +456,18 @@ class ApiServer:
         body = h._body()
         worker_id = str(body.get("worker_id") or "").strip()
         ttl = body.get("ttl_seconds")
-        view = self.kernel.write(lambda: self.kernel.engine.claim_attempt(
-            p["aid"], worker_id=worker_id, namespace=claims.namespace,
-            ttl=float(ttl) if ttl else None, trace_id=t))
-        self.kernel._audit(worker_id, "attempt.claim", p["aid"], "ok",
-                           {"lease": view.get("lease_id"), "workflow": view.get("workflow_id")}, t)
+
+        def op():
+            # claim + audit in the same write: single-writer discipline (ADR-005)
+            view = self.kernel.engine.claim_attempt(
+                p["aid"], worker_id=worker_id, namespace=claims.namespace,
+                ttl=float(ttl) if ttl else None, trace_id=t)
+            self.kernel._audit(worker_id, "attempt.claim", p["aid"], "ok",
+                               {"lease": view.get("lease_id"),
+                                "workflow": view.get("workflow_id")}, t)
+            return view
+
+        view = self.kernel.write(op)
         return (200, {"attempt": view, "nonce": view["nonce"],
                       "lease_id": view["lease_id"], "deadline": view["deadline"]}, {})
 
@@ -484,17 +491,24 @@ class ApiServer:
             encoded = json.dumps(result, default=str)
             if len(encoded.encode()) > self.kernel.config.attempt_result_max_bytes:
                 raise _V(f"result exceeds {self.kernel.config.attempt_result_max_bytes} bytes")
-        out = self.kernel.write(lambda: self.kernel.engine.attempt_complete(
-            p["aid"], ok=bool(body.get("ok", True)), error=body.get("error"),
-            trace_id=t, namespace=claims.namespace,
-            worker_id=str(body.get("worker_id") or "") or None,
-            nonce=body.get("nonce"), result=result))
-        if out and not out.get("idempotent"):
-            self.kernel._audit(str(body.get("worker_id") or claims.token_id), "attempt.complete",
-                               p["aid"], "ok",
-                               {"workflow": out.get("workflow_id"), "node": out.get("node_id"),
-                                "status": out.get("status"), "ok": bool(body.get("ok", True))}, t)
-            self.kernel.metrics.counter("worker.completions").inc()
+        actor = str(body.get("worker_id") or claims.token_id)
+
+        def op():
+            out = self.kernel.engine.attempt_complete(
+                p["aid"], ok=bool(body.get("ok", True)), error=body.get("error"),
+                trace_id=t, namespace=claims.namespace,
+                worker_id=str(body.get("worker_id") or "") or None,
+                nonce=body.get("nonce"), result=result)
+            if out and not out.get("idempotent"):
+                self.kernel._audit(actor, "attempt.complete", p["aid"], "ok",
+                                   {"workflow": out.get("workflow_id"),
+                                    "node": out.get("node_id"),
+                                    "status": out.get("status"),
+                                    "ok": bool(body.get("ok", True))}, t)
+                self.kernel.metrics.counter("worker.completions").inc()
+            return out
+
+        out = self.kernel.write(op)
         return (200, {"ok": True, **(out or {})}, {})
 
     def _list_leases(self, h, p, q, t):

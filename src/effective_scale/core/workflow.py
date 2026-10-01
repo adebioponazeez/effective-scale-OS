@@ -258,7 +258,7 @@ class WorkflowEngine:
         node = wf.nodes.get(attempt.node_id) if wf else None
         lease = snap.lease(attempt.lease_id) if attempt.lease_id else None
         deadline = attempt.deadline
-        if lease is not None:
+        if attempt.status == AttemptStatus.RUNNING and lease is not None:
             deadline = lease.expires_at if deadline is None else min(deadline, lease.expires_at)
         return {
             "id": attempt.id,

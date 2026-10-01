@@ -32,6 +32,20 @@ Surfaces already exist:
   coupling; run it against the same store **reads** while publishes go through the leader.
 - Scheduler/scaler stay on the leader (they are cheap, deterministic).
 
+#### Worker fleets (the actual compute scaling lever)
+
+Workers are **pull-based and stateless** (ADR-006): each one polls
+`GET /v1/attempts?claimable=true`, claims a lease-bound attempt, heartbeats, and completes it.
+Consequences for scaling:
+
+- add workers = add replicas; no kernel change, no rebalancing protocol, no worker registry;
+- the claim is the load balancer: whichever worker polls first owns the attempt, and the lease
+  TTL bounds how long a dead worker's slot is held;
+- scale-down is safe: stop a worker and its in-flight attempt is either finished before the
+  lease lapses or re-dispatched by retry policy (`lease_expired`);
+- capacity is bounded by workload replicas (slots), not by worker count — adding workers past
+  the slot count only increases poll traffic, which is why polling intervals are configurable.
+
 ### Stage 3 — Store HA (ADR-002/004 trigger: downtime needs, files > 10 GB)
 - Swap `SQLiteStore` → `PostgresStore` (same 12-method port; the SQL is already table-shaped).
 - Leadership: Postgres advisory lock or the lease row (already in `meta`).

@@ -14,7 +14,8 @@ To activate, either push from an account/token with `workflows` scope:
 
 ```bash
 mkdir -p .github/workflows && cp deploy/ci/ci.yml .github/workflows/ci.yml
-git add .github/workflows/ci.yml && git commit -m "ci: activate pipeline" && git push
+git add -f .github/workflows/ci.yml   # -f: the path is ignored on purpose, see above
+git commit -m "ci: activate pipeline" && git push
 ```
 
 or paste the file into the GitHub Actions UI (Actions → New workflow → paste). No other change

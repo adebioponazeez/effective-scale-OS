@@ -35,7 +35,7 @@ One process, one writer:
 | API server | serve HTTP, authenticate, validate, dispatch (reads only) | bulkhead: `max_conn` |
 | Scheduler loop | every `schedule_interval` runs pure function → apply decisions | 1 thread |
 | Scaler loop | every `scale_interval` reads metrics → hysteresis decisions | 1 thread |
-| Workflow pump | scan due nodes → dispatch attempts (bounded worker pool) | `workflow_pool` |
+| Workflow pump | scan due nodes → dispatch attempts (bounded worker pool); lease-bound attempts are completed by external workers via the attempts API (ADR-006) | `workflow_pool` |
 | Event pump | dispatch checkpointed messages to consumers (bounded pool) | `event_pool` |
 | Leader loop | heartbeat lease, watch for demotion | 1 thread |
 | Watchdog | monotonic stalls detection; fatal alert + graceful restart | 1 thread |
