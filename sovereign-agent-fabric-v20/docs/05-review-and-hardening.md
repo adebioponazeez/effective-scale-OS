@@ -156,8 +156,10 @@ The numbers in §6 are a point-in-time record of slice 2. Live numbers now come 
 - **`saf/cli/main.py` had 0 % coverage; it is now 83 %** with `tests/test_cli.py` covering every
   branch: doctor, capabilities, resources+stats, help, `run` offline (queued vs `--no-queue`),
   unreachable-kernel `sync`, empty-ledger `verify`/`ledger`, no-rollback-point `rollback`, an
-  unimplemented capability (`git/operate`) exiting 2, and a full `execute → verify → ledger`
-  lifecycle. SAF suite: 77 tests, 88 % statement coverage.
+  unimplemented capability (`interaction/browser`, the last known gap) exiting 2, and a full
+  `execute → verify → ledger` lifecycle. SAF suite: **132 tests** (143 cases), **92 % statement
+  coverage** — see the root `README.md` for live numbers; the floors are enforced by
+  `make coverage`.
 - **`saf sync` no longer reports "ok" while deferring everything**: a deferred entry now yields
   `status: kernel_unavailable` and exit code 1 with the outbox intact, so cron and CI notice.
 - **Capability claims are true**: all five CLI adapters now claim `cap://general/agent/execute`

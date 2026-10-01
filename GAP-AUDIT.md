@@ -150,13 +150,12 @@ The rule "wired or deleted" was applied literally:
 
 | Suite | Tests | Statements | Coverage | Verdict |
 |---|---|---|---|---|
-| kernel (`make test`) | **85 OK** | 2797 | **81 %** | broad, but 259 stmts of entrypoints at 0 % (B-1) |
-| SAF (`make test-saf`) | **64 passed** | 1389 | **76 %** | broad, `saf/cli/main.py` at 0 % (B-1) |
+| kernel (`make test`) | **144 OK** | 2870 | **90 %** | broad; `api/server.py` 82 % is the weakest real file (`__main__.py` is a subprocess-only shim) |
+| SAF (`make test-saf`) | **143 cases passed** (132 static) | 1700 | **92 %** | broad; `saf/cli/main.py` 83 % |
+| floors | `make coverage` | — | fails below **88 %** in either project | the number can no longer drift silently |
 
-Weakest covered units (fix these first): `main.py` 0 %, `__main__.py` 0 %, `saf/cli/main.py` 0 %,
-`economy/scoring.py` 0 %, `models/{kimi,abacus}.py` 0 %, `core/workflow.py` 75 % (120 stmts missed —
-the largest absolute miss), `core/leader.py` 75 %, `transport/effective_scale.py` 75 %,
-`adapters/sqlite_store.py` 77 %, `api/server.py` 78 %.
+The coverage push that produced these numbers also *found defects* — reported in section G, not
+swept into a percentage.
 
 ### F. Delivery pipeline
 
@@ -167,6 +166,18 @@ the largest absolute miss), `core/leader.py` 75 %, `transport/effective_scale.py
 | F-3 | S3 | **Corrected claim (this document was wrong).** Earlier revisions of this row asserted the compose file had *no* healthcheck or restart policy. That was false: `docker-compose.yml` already had `healthcheck` (on `/v1/health/ready`) and `restart: unless-stopped` — the claim came from a partial read, not a check. What was genuinely missing: the **image** had no `HEALTHCHECK`, and the k8s manifest lacked a `startupProbe`/`terminationGracePeriodSeconds` | `git show 04f00e0:docker-compose.yml`; `tools/audit.py` `C-ops` now enforces the real requirement | Added `HEALTHCHECK` to the `Dockerfile`, `startupProbe` + 30s grace to k8s, and the `C-ops` check so prose can no longer substitute for inspection | `C-ops` green across all five artifacts |
 
 ---
+
+### G. Defects the coverage push uncovered (this session)
+
+Writing tests for the *unreached* branches is where these surfaced. Each fix is pinned by a test
+that fails against the pre-fix code (verified by reverting the hunk in place).
+
+| id | Sev | Defect | Evidence | Fix | Exit criteria |
+|---|---|---|---|---|---|
+| G-1 | **S1 → FIXED** | **An event node whose publish failed wedged the DAG forever.** `_dispatch_ready` recorded an intent to persist `DISPATCHED`, and phase B re-applied it *after* the completion path had already returned the node to `PENDING` for a retry. Result: a node `dispatched` with no running attempt, no retry scheduled, no dead-letter, workflow `running` forever — silent, permanent, and invisible to `/v1/status` | Induced bus backpressure against the live kernel: node stuck `dispatched` with `publish_failed: backpressure`, attempt `failed`, workflow `running`; the new regression test times out with *"the run wedged instead of exhausting its retries"* on pre-fix code | Phase B persists skip decisions only; the store stays authoritative after `_dispatch_node`. Retry resets survive, `workflow.deadletter` fires as designed | `tests/test_workflow_lifecycle.py::test_retryable_publish_failure_retries_instead_of_wedging` (retries 1→3, node `failed`, all three attempts recorded) |
+| G-2 | S2 → FIXED | **Every warning and error in the system was logged as `info`.** 24 call sites use the house style `log(event, warn=True, error=str(exc))`, but the port's signature is positional `level`, so the flag fell into `**fields` as a stray boolean. `JsonLogger(level="warn")` therefore *dropped* the incident trail, and `--log-level error` dropped every error | `grep -c "warn=True|error=True" → 24`, positional-level call sites → 0; `/tmp` end-to-end check showed `workflow.deadletter` as `level: info` + `warn: True` | `split_level()` in `ports/logger.py` normalises both spellings (bool ⇒ level, consumed; a real `error="…"` string stays payload); explicit `level=` wins | `tests/test_logging.py` (nine tests: level floors for warn/error, payload preservation, redaction, record shape); live proof: `workflow.deadletter` now records `level=warn` |
+| G-3 | S3 → FIXED | **`cancel` was not idempotent, and the docs said it was.** `docs/09-api-reference.md` describes cancel as idempotent, but a second cancel returned `409 conflict` | API-level test | A repeat cancel on a `cancelled` run returns the workflow (state already holds); cancelling an `succeeded`/`failed`/`timed_out` run is still a `409` — that request cannot be satisfied | `test_cancel_is_idempotent`, `test_cancel_of_another_terminal_state_is_a_conflict` |
+| G-4 | S3 → CLOSED | **Dead helpers and an unreachable branch.** `core/resilience.py` shipped `retry()` and `backoff_delay()` with **zero callers** (the workflow engine has its own per-node `_backoff`), `CircuitBreaker.allow()` carried a closed-state threshold branch that can never fire (`record_failure` opens the breaker first), and `saf/core/ids.slug` duplicated the transport's slug unused | `grep` for callers → 0; branch reasoning; coverage flagged all three | Deleted the helpers and the duplicate; made the closed-state invariant explicit in `allow()`; kept the primitives that are actually wired (breaker + bulkhead) | `core/resilience.py` **75 % → 100 %**; suite green; no behaviour change (writer-isolation and chaos tests unchanged) |
 
 ## Part 3 — What to do differently (the 10,000× levers, in execution order)
 
@@ -207,22 +218,22 @@ unreal. The levers below are ordered by return-per-hour, and each is a small, te
 
 ```bash
 cd /home/user/effective-scale-OS
-python3 tools/audit.py                            # 0 unexpected findings; 3 known (accepted) gaps (10 checks)
+python3 tools/audit.py                            # 0 unexpected findings; 1 known (accepted) gap (10 checks)
 python3 tools/audit.py --json                     # same, machine-readable
 python3 tools/audit.py --render-ontology          # regenerate docs/11-ontology.md
-PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 114 tests OK
+PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 144 tests OK
 PYTHONPATH=src python3 -m unittest tests.test_soak -v                 # == make soak
-cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 116 passed
+cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 143 cases passed (132 static)
 pip install --break-system-packages coverage      # pip is PEP-668 managed in this sandbox
-cd .. && PYTHONPATH=src python3 -m coverage run --source=src/effective_scale -m unittest discover -s . -p 'test_*.py' -q && python3 -m coverage report   # 85 %
-cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m coverage run --source=saf -m pytest -q && python3 -m coverage report   # 88 %
+cd .. && make coverage                            # kernel 90 % / SAF 92 %; fails below the 88 % floor
 gh pr list --state all; gh issue list --state all  # 2 PRs, 0 issues — the evidence for Part 1
 ```
 
-Post-slice numbers (2026-10-01): kernel **113 tests** (was 87), SAF **90 tests** (was 64),
+Post-slice numbers (2026-10-01): kernel **144 tests** (was 87), SAF **132 tests** (was 64),
 entrypoints `main.py` **90 %** and `saf/cli/main.py` **83 %** (both were 0 %), audit **10 checks**
 (was 8), supervision verified across **5 deploy artifacts** by `C-ops`, scheduler capacity
-accounting fixed and pinned by **K23** (see A-7).
+accounting fixed and pinned by **K23** (see A-7), coverage floors enforced by `make coverage`
+(see E and G).
 
 ## Part 5 — Attachments (still blocked)
 

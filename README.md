@@ -15,15 +15,15 @@ audit is in [`GAP-AUDIT.md`](GAP-AUDIT.md); the machine-readable system model is
 
 | Claim | Command | Result |
 |---|---|---|
-| The repo passes its own audit | `python3 tools/audit.py` | **0 unexpected findings**, 3 accepted (tracked, burn-down-able) |
-| Kernel suite | `make test` | **114 tests OK** (unit, integration, concurrency, chaos, CLI, audit, soak) |
-| SAF suite | `make test-saf` | **116 passed** |
+| The repo passes its own audit | `python3 tools/audit.py` | **0 unexpected findings**, 1 accepted (tracked, burn-down-able) |
+| Kernel suite | `make test` | **144 tests OK** (unit, integration, concurrency, chaos, CLI, audit, soak) |
+| SAF suite | `make test-saf` | **143 cases passed** (132 statically defined; `parametrize` expands a few) |
 | Resilience kit has consumers | `tests/test_writer_isolation.py` | client writes are bounded by a bulkhead + breaker: saturated backlog or repeated infra failure ⇒ `503 overloaded` fast-fail; loops/readiness bypass both (`K24`) |
 | Scheduler capacity accounting | `tests/test_scheduler.py` | CPU and memory are separate budgets; regression tests fail against the pre-fix code (`K23`) |
 | Placement policies | `tests/test_scheduler.py` | `fifo`, `priority`, `bin_pack`, `round_robin` are four distinct behaviours — four of the six policy tests fail against the old fall-through |
 | Longevity under load | `make soak` | 25 DAGs → all `succeeded`, 2N exact attempt round-trips, bounded state, no loop errors; restart mid-load resumes with no duplicate attempts |
-| Kernel statement coverage | `coverage run --source=src/effective_scale …` | **85 %** (2839 stmts) |
-| SAF statement coverage | `coverage run --source=saf …` | **88 %** (1395 stmts) |
+| Kernel statement coverage | `make coverage` (floor 88 %) | **90 %** (2870 stmts); weakest real file `api/server.py` 82 % (`__main__.py` is a subprocess-only shim, invisible to coverage) |
+| SAF statement coverage | `make coverage` (floor 88 %) | **92 %** (1700 stmts); weakest file `cli/main.py` 83 % |
 | Operator entrypoints | `tests/test_cli.py` | `main.py` **0 %→90 %**, `saf/cli/main.py` **0 %→83 %** |
 | Probes are honest | `tests/test_cli.py::HealthSemanticsTest` | store death ⇒ `/v1/health/ready` 503 while `/v1/health/live` stays 200 |
 | Supervision is wired | `C-ops` audit over 5 artifacts | systemd · Windows SCM · k8s · compose · image all declare restart policy + probes |
@@ -75,7 +75,7 @@ now a build artifact you can run, not a document that can go missing.
 | **S1** Nothing ran it continuously; probes were decorative | systemd unit, Windows SCM installer, k8s startup/readiness/liveness + 30s drain, compose healthcheck, Docker `HEALTHCHECK`; readiness is now an end-to-end writer round-trip + store probe | `C-ops` audit; `tests/test_cli.py`; `deploy/*/README.md` |
 | **S1** Longevity unproven | `make soak`: 25 DAGs over the worker protocol, event delivery + ack, bounded attempts/leases/RSS, restart under load with no duplicate attempts | `tests/test_soak.py` (proved it fails when starved) |
 | **S3** Version literals disagreed in 3 places (+ a stale deploy tag) | One source: `effective_scale.__version__` imported by `server.py`/`kernel.py`; `C-versions` now scans sources **and** manifests | `tools/audit.py`; negative tests |
-| **S2** `cap://research/web` had no implementation (and no network boundary to make one safe) | New `NetworkPolicy` (deny-by-default allowlists, SSRF guard, bounds) + `saf://web` runtime: fetch caller-supplied URLs, hash them, bounded excerpt; redirects re-validated per hop; compiler carries URLs into constraints | `tests/test_web_runtime.py` (26 tests: 15 policy incl. metadata-IP/SSRF and 11 runtime against a real loopback server); `known-gaps.json` shrank 2 → 1 |
+| **S2** `cap://research/web` had no implementation (and no network boundary to make one safe) | New `NetworkPolicy` (deny-by-default allowlists, SSRF guard, bounds) + `saf://web` runtime: fetch caller-supplied URLs, hash them, bounded excerpt; redirects re-validated per hop; compiler carries URLs into constraints | `tests/test_web_runtime.py` (policy incl. metadata-IP/SSRF plus runtime against a real loopback server); `known-gaps.json` shrank 2 → 1 |
 | **S3** 10 dormant modules were inventory that looked like capability | Deleted the stubs (`models/{kimi,abacus}`, `economy/scoring`, `transport/{grpc,local}`, both `config/*.yaml`); **wired** `models/openrouter` + `base` so a provider registers itself the moment `OPENROUTER_API_KEY` exists; added `C-dormant:missing|stale` so the ledger polices itself | Dormant 10 → 0; the new check flagged the provider entries the instant they became reachable — which is how they were removed |
 | **S2** `cap://software/git/operate` was compiler-emitted but unimplemented — every git intent ended "unavailable" (the first entry in `known-gaps.json`) | New `saf://git` runtime: fixed subcommands through `create_subprocess_exec` (no shell, no interpolation), commit messages as one bounded argv element, mutations only when a message is supplied, `paths` confined to the repository; registered in the default registry | `tests/test_git_runtime.py` (twelve tests incl. hostile-message and path-escape cases); `known-gaps.json` shrank 3 → 2 |
 | **S2** `core/resilience.py` was tested in isolation and imported by nothing | Wired into the client-facing write path: `Bulkhead` bounds the writer backlog (`max_writer_backlog`, default 1024), `CircuitBreaker` opens after repeated infrastructure failures — both shed load with `503 overloaded` instead of buffering; loops and readiness probes bypass both because they are the recovery path; `/v1/status.writer` + `writer.*` gauges expose it | `tests/test_writer_isolation.py` (six tests incl. API-level shedding and breaker recovery); invariant **K24** |
@@ -89,7 +89,7 @@ now a build artifact you can run, not a document that can go missing.
 |---|---|---|---|---|
 | 1 | S2 | **Capability backlog is down to one**: `cap://interaction/browser` has no runtime | It is the last declared capability without an implementation — it should not land before the §17 trust pipeline exists | Build the trust pipeline (sandboxed browsing + policy gate), then the browser runtime behind it |
 | 2 | S3 | **CI does not gate on GitHub** — `.github/workflows/ci.yml` is ignored/untracked (token lacks `workflows` scope); PR #2 says "no checks reported". Tracked pipeline now runs `make audit` + `make soak` too | Local-only acceptance is a habit, not a guarantee | Activate the tracked `deploy/ci/ci.yml` via a token with the `workflows` scope or the Actions UI |
-| 3 | S3 | **Weakest covered units** remain `core/workflow.py` 75 %, `core/leader.py` 75 %, `transport/effective_scale.py` 75 % | The workflow engine is the biggest unreached surface (120 missed stmts) | Target the uncovered branches: recovery paths, cancel/cancel-during-dispatch, retry boundaries |
+| 3 | S3 | **Coverage was undeclared and drifting** — the three named weak units sat at 75 % with no floor to stop them slipping | Regressions in the crash paths stayed invisible until an operator hit them | **Closed:** `core/workflow.py` 75 %→89 %, `core/leader.py` 75 %→98 %, `saf/transport/effective_scale.py` 78 %→97 %; totals kernel 85 %→90 %, SAF 88 %→92 %; `make coverage` now **fails below an 88 % floor** |
 
 ## 6. What to do differently to make it run well
 
@@ -106,8 +106,8 @@ now a build artifact you can run, not a document that can go missing.
 ## 7. Quick start
 
 ```bash
-make audit         # code ↔ ontology ↔ docs ↔ deploy: 0 unexpected findings, 3 tracked gaps
-make test          # kernel suite (114 tests: unit, integration, concurrency, chaos, CLI, audit, soak)
+make audit         # code ↔ ontology ↔ docs ↔ deploy: 0 unexpected findings, 1 tracked gap
+make test          # kernel suite (144 tests: unit, integration, concurrency, chaos, CLI, audit, soak)
 make soak          # longevity: sustained load, bounded state, restart without duplicates
 make test-all      # kernel + SAF subproject suites
 make ontology      # regenerate docs/11-ontology.md from ontology/system.json

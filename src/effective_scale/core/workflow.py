@@ -90,9 +90,11 @@ class WorkflowEngine:
         wf = snap.workflow(workflow_id)
         if wf is None:
             raise NotFoundError(f"workflow {workflow_id} not found")
-        if wf.status in (WorkflowStatus.SUCCEEDED, WorkflowStatus.FAILED, WorkflowStatus.TIMED_OUT,
-                         WorkflowStatus.CANCELLED):
+        if wf.status in (WorkflowStatus.SUCCEEDED, WorkflowStatus.FAILED, WorkflowStatus.TIMED_OUT):
             raise ConflictError(f"workflow already terminal: {wf.status.value}")
+        if wf.status == WorkflowStatus.CANCELLED:
+            # cancel is idempotent: a repeat asks for the state that already holds
+            return copy.deepcopy(wf)
         wf = copy.deepcopy(wf)
         wf.cancel_requested = True
         for node in wf.nodes.values():
@@ -483,8 +485,13 @@ class WorkflowEngine:
                 continue  # duplicate dispatch guard (double-tick safety)
             if self._dispatch_node(wf, nid, now):
                 dispatched = True
-                should_be[nid] = (NodeStatus.DISPATCHED, None)
-                # re-read: an event node may have completed to terminal inside _dispatch_node
+                # Re-read and let the store stay authoritative. `_dispatch_node`
+                # already persisted DISPATCHED; it can also have moved the node
+                # further inside this very call (an event node completes there,
+                # and a failed publish returns it to PENDING for a retry with
+                # backoff). Queuing a DISPATCHED rewrite for phase B would then
+                # clobber the retry reset and wedge the node in DISPATCHED
+                # forever, so phase B persists skip decisions only.
                 wf = copy.deepcopy(self.store.snapshot().workflow(wf_id))
 
         if not should_be and not dispatched:

@@ -49,3 +49,15 @@ def test_resolver():
     r=Registry(); r.register("agent://pi",PiAdapter()); r.register("agent://cursor-cli",CursorCliAdapter())
     ranked=CapabilityResolver(r).resolve(compile_intent("refactor code"),ExecutionContext(task_id="t"))
     assert ranked and ranked[0].resource_id=="agent://cursor-cli"
+
+def test_id_helpers_are_unique_and_labeled():
+    """Worker ids show up in kernel attempt rows — they must be readable and unique."""
+    from saf.core.ids import new_execution_id, new_worker_id
+
+    a, b = new_execution_id(), new_execution_id()
+    assert a.startswith("exec-") and len(a) == len("exec-") + 16 and a != b
+    w1 = new_worker_id("saf")
+    w2 = new_worker_id("saf")
+    assert w1.startswith("saf-") and w1 != w2
+    assert new_worker_id("cli").startswith("cli-")
+    assert " " not in w1

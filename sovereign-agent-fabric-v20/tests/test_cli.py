@@ -114,12 +114,15 @@ def test_rollback_with_no_points_is_honest(monkeypatch, capsys, tmp_path):
 
 
 def test_execute_unimplemented_capability_exits_nonzero(monkeypatch, capsys, tmp_path):
-    """git/operate is a declared-but-unimplemented capability (tracked in known-gaps.json):
-    the CLI must fail loudly, never pretend the work happened."""
-    code, payload = run(monkeypatch, capsys, "execute", "git commit the changes",
+    """`cap://interaction/browser` is the one declared capability with no runtime
+    (tracked in known-gaps.json): the CLI must fail loudly, never pretend the work
+    happened. Git used to be this example — it has a runtime now."""
+    code, payload = run(monkeypatch, capsys, "execute", "open the browser and check the site",
                         "--workspace", str(tmp_path), "--state-dir", str(tmp_path / ".saf"))
     assert code == 2
     assert payload["ok"] is False
+    assert payload["steps"][0]["capability"] == "cap://interaction/browser"
+    assert payload["steps"][0]["status"] in ("unsupported", "unavailable")
 
 
 def test_execute_tests_then_verify_ledger(monkeypatch, capsys, tmp_path):

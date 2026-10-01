@@ -25,8 +25,29 @@ def redact(data: Any, *, depth: int = 0) -> Any:
     return data
 
 
+_LEVEL_FLAGS = ("debug", "info", "warn", "error", "fatal")
+
+
+def split_level(level: str, fields: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Normalise the two spellings of severity into `(level, fields)`.
+
+    Call sites use the house style `logger.log("x", warn=True, error=str(exc))`:
+    a *boolean* flag names the level while a non-boolean `error="..."` stays a
+    payload field. `level="warn"` keeps working too; an explicit level wins.
+    Flags are consumed so they never leak into the record as bogus fields, and
+    severity is real — `JsonLogger(level="error")` must keep error records.
+    """
+    for flag in _LEVEL_FLAGS:
+        if fields.get(flag) is True:
+            if level == "info":
+                level = flag
+            del fields[flag]
+    return level, fields
+
+
 class Logger(Protocol):
-    def log(self, event: str, level: str = "info", **fields: Any) -> None: ...
+    def log(self, event: str, level: str = "info", **fields: Any) -> None:
+        """Emit one structured record; severity via `level=` or a bool flag."""
 
 
 class JsonLogger:
@@ -37,6 +58,7 @@ class JsonLogger:
         self._lock = threading.Lock()
 
     def log(self, event: str, level: str = "info", **fields: Any) -> None:
+        level, fields = split_level(level, dict(fields))
         if level not in ("debug", "info", "warn", "error", "fatal"):
             level = "info"
         order = {"debug": 0, "info": 1, "warn": 2, "error": 3, "fatal": 4}
@@ -57,6 +79,7 @@ class MemLogger:
         self.records: list[dict[str, Any]] = []
 
     def log(self, event: str, level: str = "info", **fields: Any) -> None:
+        level, fields = split_level(level, dict(fields))
         self.records.append({"event": event, "level": level, **fields})
 
 

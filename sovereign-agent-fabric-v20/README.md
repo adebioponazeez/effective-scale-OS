@@ -33,7 +33,7 @@ python -m saf.cli.main execute "inspect repository and run tests" --workspace . 
 python -m saf.cli.main verify --state-dir .saf                     # evidence hash chain
 python -m saf.cli.main rollback latest --workspace . --dry-run     # snapshot -> restore
 python -m saf.cli.main resources --stats
-pytest -q                    # 118 tests (pytest reports 122 cases: parametrize expands a few)
+pytest -q                    # 132 tests (pytest reports 143 cases: parametrize expands a few)
 ```
 
 ## Hardening (docs/05-review-and-hardening.md §6)
