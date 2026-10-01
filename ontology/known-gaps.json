@@ -1,0 +1,35 @@
+{
+  "note": "Audited findings that are accepted for now. This list may only shrink: when a check stops firing, delete its entry (tests/test_audit.py fails on stale entries). Anything not listed here is an unexpected finding and fails the audit and the kernel suite.",
+  "gaps": [
+    {
+      "id": "C-caps:unimplemented:cap://software/git/operate",
+      "severity": "medium",
+      "check": "capabilities",
+      "title": "cap://software/git/operate has no implementation",
+      "detail": "The compiler emits this capability for git/commit intents. No runtime claims it, so the executor reports the step 'unavailable' (never a fake success).",
+      "plan": "Add a deterministic git runtime (bounded, fixed-argv git commands with a rollback point) or register it with an agent adapter that can operate a repository.",
+      "revisit": "next execution-slice increment",
+      "exit_criteria": "Either the capability is satisfied by a registered resource (ontology capabilities.satisfied_by non-empty) or the compiler stops emitting it."
+    },
+    {
+      "id": "C-caps:unimplemented:cap://research/web",
+      "severity": "medium",
+      "check": "capabilities",
+      "title": "cap://research/web has no implementation",
+      "detail": "Declared capability with no runtime; needs network access and a provider boundary.",
+      "plan": "Wire the dormant model providers (saf/models) behind a research runtime with explicit network policy.",
+      "revisit": "when provider credentials exist",
+      "exit_criteria": "A registered resource claims cap://research/web and the network policy is enforced and tested."
+    },
+    {
+      "id": "C-caps:unimplemented:cap://interaction/browser",
+      "severity": "medium",
+      "check": "capabilities",
+      "title": "cap://interaction/browser has no implementation",
+      "detail": "Declared capability with no runtime; browser automation is a §17 trust-pipeline concern.",
+      "plan": "Browser adapter behind the sandbox/trust pipeline; do not register it before policy enforcement exists.",
+      "revisit": "after the §17 trust pipeline slice",
+      "exit_criteria": "A browser resource is registered with a tested policy boundary."
+    }
+  ]
+}

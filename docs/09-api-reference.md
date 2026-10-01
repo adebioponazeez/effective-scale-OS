@@ -53,7 +53,13 @@ Deadband 10 %, scale-down protection 180 s, bounded by min/max.
 | GET | `/workflows`, `/workflows/{wid}` | state views |
 | POST | `/workflows/{wid}/cancel` | revokes running attempts; idempotent completions ignored |
 | POST | `/workflows/{wid}/retry-node/{nid}` | manual retry of terminal node |
-| POST | `/attempts/{aid}/complete` | `{"ok":true}` or `{"ok":false,"error":"..."}` — the executor protocol |
+| GET | `/attempts` | query: `state=running`, `claimable=true|false`, `workflow_id`, `lease_id`,
+`worker_id`, `limit` — namespace-scoped worker inbox |
+| GET | `/attempts/{aid}` | one attempt (404 for another namespace) |
+| POST | `/attempts/{aid}/claim` | `{"worker_id","ttl_seconds"?}` → `{attempt, nonce, lease_id, deadline}` — binds a worker, rotates the fencing token |
+| POST | `/attempts/{aid}/heartbeat` | `{"worker_id","nonce","ttl_seconds"?}` → `{lease_expires_at, deadline}` — renews the lease |
+| POST | `/attempts/{aid}/complete` | `{"ok":true,"worker_id","nonce","result":{...}}` or `{"ok":false,"error":"..."}` — the executor protocol |
+| GET | `/leases` | lease slots with holder, expiry and state (namespace-scoped) |
 
 Node shape:
 ```json

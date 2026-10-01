@@ -18,12 +18,14 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .. import __version__
 from ..adapters import MemoryStore
 from ..domain.ids import new_id, new_nonce
 from ..domain.models import Lease, Namespace, Token, Workload
 from ..domain.states import LeaseState, NodeState, transition
 from ..observability.registry import Registry
 from ..ports.logger import JsonLogger, Logger
+from ..ports.clock import SystemClock
 from ..ports.random import RandomSource, SecureRandom
 from ..ports.store import Snapshot, Store
 from .cron import CronSchedule
@@ -70,7 +72,7 @@ class Kernel:
             # ephemeral dev default: surface loudly but keep the API usable
             self.config.auth_secret = "dev-insecure-secret-change-me!"
         self.store = store or MemoryStore()
-        self.clock = clock or _SysClock()
+        self.clock = clock or SystemClock()
         self.rng = rng or SecureRandom()
         self.logger = logger or JsonLogger(level=self.config.log_level)
         self.metrics = metrics or Registry()
@@ -124,7 +126,7 @@ class Kernel:
     def start(self) -> None:
         self.store.open()
         self.logger.log("kernel.start", info=True, store=type(self.store).__name__,
-                        holder=self.config.leader_holder, version_="0.5.0")
+                        holder=self.config.leader_holder, version_=__version__)
         self._write(lambda: self.bus.recover())
         self._write(lambda: self.engine.recover())
         self._write(lambda: self.leader.acquire())
@@ -493,18 +495,6 @@ class Kernel:
     def consume_now(self, topic: str, group: str, handler: Callable[[dict[str, Any]], None],
                     *, consumer: str = "default") -> int:
         return ConsumerGroup(self.bus, topic, group, handler, consumer=consumer).pump_once()
-
-
-class _SysClock:
-    def now(self) -> float:
-        return time.time()
-
-    def monotonic(self) -> float:
-        return time.monotonic()
-
-    def sleep(self, seconds: float) -> None:
-        time.sleep(max(0.0, seconds))
-
 
 def _from_ts(ts: float):
     import datetime as dt

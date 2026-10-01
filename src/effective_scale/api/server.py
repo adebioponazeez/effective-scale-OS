@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+from .. import __version__
 from ..core.kernel import Kernel
 from ..domain.errors import DomainError, Forbidden, RateLimited, Unauthorized
 from ..domain.models import to_jsonable
@@ -244,7 +245,7 @@ class ApiServer:
     def _status(self, h, p, q, t):
         kv = self.kernel
         return (200, {
-            "version": "0.4.0", "leader": kv.leader.is_leader(),
+            "version": __version__, "leader": kv.leader.is_leader(),
             "holder": kv.config.leader_holder, "store": type(kv.store).__name__,
             "writes": kv.store.write_count(),
             "workflows": len(kv.store.snapshot().workflows),
