@@ -557,6 +557,13 @@
       "statement": "placement never overcommits a node: CPU and memory are each compared against their own used totals, and a node is skipped as soon as either budget is exhausted for a workload",
       "enforced_by": "src/effective_scale/core/scheduler.py",
       "tested_by": "tests/test_scheduler.py"
+    },
+    {
+      "id": "K24",
+      "plane": "api",
+      "statement": "client-driven writes are bounded: a saturated writer backlog or a breaker opened by repeated infrastructure failures returns 503 overloaded (shedding load, never buffering it), while loops and the readiness probe bypass both guards because they are the recovery path",
+      "enforced_by": "src/effective_scale/core/kernel.py",
+      "tested_by": "tests/test_writer_isolation.py"
     }
   ],
   "capabilities": [

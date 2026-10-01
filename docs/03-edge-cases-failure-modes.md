@@ -18,6 +18,7 @@ The checklist a production reviewer actually reads. Every row is either implemen
 | E9 | Two workers complete the same attempt | claim issues a fencing nonce; completion without the live nonce is `409`; re-claim rotates the token |
 | E10 | Worker writes a result for another tenant's attempt | attempt routes are namespace-scoped by the caller's token; foreign ids are `404`, never `403` (no existence leak) |
 | E11 | Worker sends a 10 MB "result" | bounded at 64 KiB (`validation_error`) and recorded as JSON only |
+| E12 | Writer wedged or store dead: client writes pile up (unbounded queue, parked threads, timeout storm) | client-facing writes are guarded by a **bulkhead** (`max_writer_backlog`, default 1024) and a **circuit breaker** (`breaker_failure_threshold`, default 5): shedding returns `503 overloaded` with `Retry-After` instead of buffering. Loops and the readiness probe bypass both — they are the recovery path. Observable in `/v1/status.writer` and `writer.*` gauges |
 
 ## 2. Timing & clock edge cases
 

@@ -272,6 +272,12 @@ class ApiServer:
             "nodes": len(kv.store.snapshot().nodes),
             "leases": len(kv.store.snapshot().leases),
             "loop_errors": kv._loop_errors,
+            "writer": {
+                "breaker": kv.writer_breaker.state(),
+                "pending": kv.write_bulkhead.in_use,
+                "backlog_limit": kv.config.max_writer_backlog,
+                "queued": kv._wq.qsize(),
+            },
         }, {"Cache-Control": "no-store"})
 
     def _metrics(self, h, p, q, t):

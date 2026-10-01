@@ -566,7 +566,9 @@ def check_test_counts(ctx) -> list[Finding]:
             findings.append(Finding(
                 "test_counts", f"C-test-counts:{name}", "low",
                 "stated test count does not match discovery",
-                f"{name} states {sorted(stated)}, discovery finds {actual}"))
+                f"{name} states {sorted(stated)}, discovery finds {actual}. State the real total "
+                f"once (e.g. \"{actual} tests\"); spell out any other count in words "
+                f"(\"four policy tests\") so this check stays unambiguous."))
     ctx["counts"] = {"kernel_tests": kernel, "saf_tests": saf}
     return findings
 
