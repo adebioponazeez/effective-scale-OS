@@ -91,6 +91,19 @@ steps  : 1) satisfy pinned → 2) satisfy anti-affinity/spread → 3) FFD bin-pa
          4) drain/cordon-aware → 5) fairness (queue depth) → 6) emit plan
 ```
 
+Placement is **constraint-first** (state, tags, pin, spread, then capacity), then policy order.
+Each policy is a distinct ordering of the eligible nodes — none falls back to another:
+
+| Policy | Node order | Use when |
+|---|---|---|
+| `bin_pack` | most free CPU first | minimise fragmentation; fewest nodes |
+| `round_robin` | fewest active leases first | even spread; noisy neighbours |
+| `fifo` | earliest-created node first, filled until full | queue-like fill; predictable bin placement |
+| `priority` | nodes already running this workload first, then least loaded | keep a high-priority service together; avoid churn |
+
+Capacity is enforced per budget: CPU against CPU used, memory against memory used (**K23**). A
+node is skipped as soon as either budget cannot fit the workload — placement never overcommits.
+
 It is a **pure function** → unit-testable without I/O; plans applied through the store with
 `optimistic concurrency` (epoch check — if a lease/plan changed, re-run).
 

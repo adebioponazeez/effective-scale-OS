@@ -71,6 +71,10 @@ slice:
 - **B-1's exit criteria were optimistic in wording**: "0 % coverage" became 90 %/83 %, but
   coverage is not correctness — the black-box subprocess test (boot → token → HTTP → SIGTERM →
   reopen store) is the part that would have caught a real break, and it is the part worth keeping.
+- **The ranked gap list earned its keep:** implementing item #2 (decorative scheduling policies) is
+  what surfaced **A-7**, a real S1 overcommit bug in the scheduler's capacity accounting. The bug had
+  been invisible for two slices because the one test that covered capacity passed by accident — a
+  reminder that "tested" and "correct" are different claims.
 - **The soak test was initially a false negative**: a first version "passed" while no workflow
   ever completed, because the driver gave up before the engine dispatched, and the assertion only
   checked "terminal, not succeeded". It was rewritten to assert `succeeded` for every DAG plus
@@ -98,7 +102,8 @@ slice:
 | B-2 | **S1 → CLOSED (bounded)** | ~~Nothing runs it continuously; probes are decorative~~ **Fixed, with one honest residue.** Supervision now ships for every runtime — systemd unit (Restart=always, 35s drain, hardening), Windows SCM installer (`sc.exe failure` restart ladder), k8s startup/readiness/liveness probes, compose healthcheck, image `HEALTHCHECK` — and `C-ops` fails the build if any of them loses its restart policy or probe. `make soak` (tests/test_soak.py) runs 25 DAGs through the worker protocol with event delivery, asserting all workflows `succeed`, exact 2N attempt round-trips, bounded attempts/leases/RSS, no loop errors, and no duplicate attempts after an abrupt restart | `tools/audit.py` `C-ops`; `make soak`; `deploy/systemd/README.md` | **Residue:** the soak is a ~4 s bounded check, not a 24 h campaign on real hardware — that remains open below (B-2b) | `C-ops` green + soak green — **met** |
 | B-2b | S3 | **No long-duration campaign.** The soak is minutes-short: it cannot catch slow leaks (file descriptors, WAL growth, checkpoint starvation) that only appear over hours | `tests/test_soak.py` runtime ~4 s | Add a nightly job running the soak driver for 24 h against a temp store, asserting WAL size, fd count and RSS at hourly checkpoints | A 24 h run with monotonic (bounded) WAL, fds and RSS curves |
 | B-3 | S2 | **The resilience kit has zero production consumers.** `core/resilience.py` (circuit breaker, bulkhead, retry) is unit-tested and imported by nothing | `coverage` shows 73 % from tests alone; import-graph check in `audit.py` `C-deadcode` flags consumers absent | Either wrap the store + outbound transports (SAF `transport/effective_scale.py`, `transport/outbox.py`) in the breaker/bulkhead, or delete the module | A product call path is wrapped and a test proves the breaker opens under induced failure |
-| B-4 | S2 | **Scheduling policies are decorative.** `SchedulingPolicy.FIFO` and `.PRIORITY` both fall through to first-fit; only the workload pass sorts by `-priority` | `src/effective_scale/core/scheduler.py:93` — `else:  # FIFO / PRIORITY -> first-fit` | Implement the policies (priority-ordered node scan / arrival-ordered), or collapse the enum to what exists and say so | A test where FIFO and PRIORITY place the *same* workload on *different* nodes |
+| B-4 | S2 → CLOSED | ~~`SchedulingPolicy.FIFO` and `.PRIORITY` both fall through to first-fit~~ **Implemented with distinct, documented semantics:** `fifo` fills the earliest-created eligible node until full; `priority` prefers nodes already running that workload (affinity) then least-loaded; `bin_pack` most-free-first; `round_robin` fewest-leases-first. Unknown/legacy policy values fall back deterministically instead of raising | Was `src/effective_scale/core/scheduler.py` `else:` branch | Done: 6 new tests pin the semantics — **4 of them fail against the previous fall-through implementation** (verified by reverting the code in-test) | `tests/test_scheduler.py` |
+| A-7 | **S1 → CLOSED** | **The scheduler overcommitted nodes.** `_eligible_nodes` unpacked `(leases, cpu_used, mem_used)` and then compared `capacity_cpu` against the **lease count** and `capacity_mem` against **CPU used** — memory was never compared with memory. A node with 64 MB free could be handed a 512 MB workload, and a node with thousands of tiny leases looked "full" to the CPU check. The pre-existing `test_capacity_respected` passed only because the two wrong comparisons partially cancelled | Found by writing the B-4 policy tests: FIFO was expected to place `['cli7', 'api2']` and produced `['cli7', 'cli7']` on a node with room for one replica | Fixed: compare like for like; regression tests for the memory budget, the CPU budget and the "a lease count is not a CPU budget" case; invariant **K23** | Pre-fix code fails 2 of the new tests; post-fix all 18 scheduler tests pass and the soak stays green |
 | B-6 | S2 → CLOSED | ~~`saf sync` exited 0 while deferring every entry~~ **Fixed:** sync now reports `kernel_unavailable` and exits 1 when entries are deferred, keeps the outbox intact, and a test pins the contract | found in `tests/test_cli.py` | Done | `test_sync_reports_kernel_unavailable_with_outbox_intact` |
 | B-5 | S2 | **Progress is invisible while it happens.** No dashboard, no alert rules, no "is the fleet actually producing?" metric. The status surfaces (`/v1/status`, `/v1/attempts`) exist but nothing consumes them | Manual: repo has metrics counters but no consumer/threshold file | Define 5 SLOs (attempt-throughput, claim latency, lease-expiry retries, DLQ delta, outbox backlog) and one alert rule per SLO | `make smoke-soak` asserts the SLOs over a synthetic fleet run |
 
@@ -197,7 +202,7 @@ cd /home/user/effective-scale-OS
 python3 tools/audit.py                            # 0 unexpected findings; 3 known (accepted) gaps (10 checks)
 python3 tools/audit.py --json                     # same, machine-readable
 python3 tools/audit.py --render-ontology          # regenerate docs/11-ontology.md
-PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 98 tests OK
+PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 107 tests OK
 PYTHONPATH=src python3 -m unittest tests.test_soak -v                 # == make soak
 cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 77 passed
 pip install --break-system-packages coverage      # pip is PEP-668 managed in this sandbox
@@ -206,9 +211,10 @@ cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m coverage run --source=s
 gh pr list --state all; gh issue list --state all  # 2 PRs, 0 issues — the evidence for Part 1
 ```
 
-Post-slice numbers (2026-10-01): kernel **98 tests / 85 %** (was 87 / 81 %), SAF **77 tests /
-88 %** (was 64 / 76 %), entrypoints `main.py` **90 %** and `saf/cli/main.py` **83 %** (both were
-0 %), audit **10 checks** (was 8), supervision verified across **5 deploy artifacts** by `C-ops`.
+Post-slice numbers (2026-10-01): kernel **107 tests** (was 87), SAF **77 tests** (was 64),
+entrypoints `main.py` **90 %** and `saf/cli/main.py` **83 %** (both were 0 %), audit **10 checks**
+(was 8), supervision verified across **5 deploy artifacts** by `C-ops`, scheduler capacity
+accounting fixed and pinned by **K23** (see A-7).
 
 ## Part 5 — Attachments (still blocked)
 

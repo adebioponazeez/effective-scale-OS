@@ -68,6 +68,7 @@ Product versions: kernel `0.5.0` · saf `0.2.0` — declared once, enforced by `
 | K20 | the reference kernel has zero third-party runtime dependencies | `ontology/system.json#claims.C-stdlib` | `tests/test_audit.py` |
 | K21 | readiness reflects the ability to commit: /v1/health/ready is 503 whenever the kernel cannot execute a store statement or its writer is wedged, while /v1/health/live stays 200 because the process is still recoverable | `src/effective_scale/api/server.py` | `tests/test_cli.py` |
 | K22 | sustained operation keeps every background loop alive with bounded durable state, and an abrupt restart resumes work without duplicating attempts | `src/effective_scale/core/kernel.py` | `tests/test_soak.py` |
+| K23 | placement never overcommits a node: CPU and memory are each compared against their own used totals, and a node is skipped as soon as either budget is exhausted for a workload | `src/effective_scale/core/scheduler.py` | `tests/test_scheduler.py` |
 
 ## Capabilities
 
