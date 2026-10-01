@@ -630,10 +630,10 @@
     },
     {
       "id": "cap://software/git/operate",
-      "satisfied_by": [],
-      "deterministic": false,
-      "unimplemented": true,
-      "note": "compiler emits it for git/commit intents; no runtime registered yet \u2014 executor reports it unavailable"
+      "satisfied_by": [
+        "saf://git"
+      ],
+      "deterministic": true
     },
     {
       "id": "cap://research/web",

@@ -82,7 +82,7 @@ Product versions: kernel `0.5.0` · saf `0.2.0` — declared once, enforced by `
 | `cap://software/code/inspect` | agent://pi | False |
 | `cap://software/agent/execute` | agent://pi, agent://cursor-cli, agent://codex-cli, agent://opencode, agent://aider | False |
 | `cap://general/agent/execute` | agent://pi, agent://cursor-cli, agent://codex-cli, agent://opencode, agent://aider | False |
-| `cap://software/git/operate` | **none — declared unimplemented** | False |
+| `cap://software/git/operate` | saf://git | True |
 | `cap://research/web` | **none — declared unimplemented** | False |
 | `cap://interaction/browser` | **none — declared unimplemented** | False |
 

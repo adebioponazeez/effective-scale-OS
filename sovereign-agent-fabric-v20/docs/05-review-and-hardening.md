@@ -163,6 +163,10 @@ The numbers in §6 are a point-in-time record of slice 2. Live numbers now come 
 - **Capability claims are true**: all five CLI adapters now claim `cap://general/agent/execute`
   (the ontology said five resources satisfied it; the live registry had zero). Enforced by the
   `C-caps` audit check in the root `tools/audit.py`.
-- Still open for SAF: `cap://software/git/operate` has no runtime (the compiler emits it; the
-  executor reports it unavailable), and the dormant provider/model modules await credentials —
-  both tracked in `ontology/known-gaps.json` and the root `GAP-AUDIT.md`.
+- **`cap://software/git/operate` is implemented** as the deterministic `saf://git` runtime
+  (fixed subcommands, no shell, bounded messages, read-only unless a message is supplied),
+  registered in the default registry: 8 of 10 declared capabilities are now satisfied and the
+  first entry left `ontology/known-gaps.json` — the ledger may only shrink. SAF suite: 90 tests.
+- Still open for SAF: `cap://research/web` and `cap://interaction/browser` have no runtime (both
+  need a network policy boundary first), and the dormant provider/model modules await credentials —
+  tracked in `ontology/known-gaps.json` and the root `GAP-AUDIT.md`.

@@ -113,3 +113,15 @@ saf worker --es http://127.0.0.1:8080 --token "$TOKEN" --max-jobs 4 --idle-limit
   to be installed, and "not installed" is reported, never faked.
 - Resource statistics are **reported**, not fed back into ranking: resolution stays a pure
   function of registry state (docs §9), and the observed numbers exist for operators.
+
+
+## Rollback scope for the git runtime
+
+`saf://git` commits through the working tree. A rollback point taken before the step restores
+**file contents** — `BackupStore` deliberately skips `.git/` (object store, index, refs), so a
+rollback does not rewind commit history. Practical consequence: after `saf rollback`, the files
+return to their pre-step content while the commit still exists in the repository's log. Treat a
+rollback as "undo the edits", not "undo the commit"; use `git revert`/`git reset` in the
+workspace when history itself must move. The runtime is otherwise bounded: fixed subcommands
+(`rev-parse`, `status`, `diff`, `add`, `commit`), no shell, commit messages capped
+(default 200 chars, hard limit 2000), and `paths` must stay inside the repository.

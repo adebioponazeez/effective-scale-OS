@@ -33,7 +33,7 @@ python -m saf.cli.main execute "inspect repository and run tests" --workspace . 
 python -m saf.cli.main verify --state-dir .saf                     # evidence hash chain
 python -m saf.cli.main rollback latest --workspace . --dry-run     # snapshot -> restore
 python -m saf.cli.main resources --stats
-pytest -q                                                           # 77 tests
+pytest -q                                                           # 90 tests
 ```
 
 ## Hardening (docs/05-review-and-hardening.md §6)
@@ -46,6 +46,9 @@ pytest -q                                                           # 77 tests
 - **Execution** (`runtime/executor.py`): PLAN→EXECUTE→VALIDATE→EVIDENCE→MEMORY with
   candidate fall-through; mutating steps are save-proofed from disk, never from claims.
 - **Deterministic local runtime** (`saf://local`): inspect / run tests / save-proof
+- **Deterministic git runtime** (`saf://git`): repository status and bounded commits —
+  fixed subcommand vocabulary, `create_subprocess_exec` only (no shell), the commit
+  message is one bounded argv element, and nothing mutates unless a message is given
   with no model call, bounded and unsupported-by-default for everything else.
 - **Rollback** (`tools/backup.py`): content-addressed points, hash-verified restore,
   explicit `unrestorable` reporting (never silent data loss).

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from saf.agents.cli import (AiderAdapter, CodexCliAdapter, CursorCliAdapter,
                             OpenCodeAdapter, PiAdapter)
+from saf.agents.git import GitRuntime
 from saf.agents.local import LocalRuntime
 from saf.core.registry import Registry
 from saf.core.resolver import CapabilityResolver
@@ -20,8 +21,10 @@ def build_registry(test_command: list[str] | None = None) -> Registry:
     r = Registry()
     for a in [PiAdapter(), CursorCliAdapter(), CodexCliAdapter(), OpenCodeAdapter(), AiderAdapter()]:
         r.register(a.resource_id, a)
-    r.register(LocalRuntime(test_command=test_command).resource_id,
-               LocalRuntime(test_command=test_command))
+    local = LocalRuntime(test_command=test_command)
+    r.register(local.resource_id, local)
+    git = GitRuntime()
+    r.register(git.resource_id, git)
     return r
 
 

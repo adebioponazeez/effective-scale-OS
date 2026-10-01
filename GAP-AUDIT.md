@@ -122,12 +122,13 @@ Live registry (`build_registry()`): 7 capability ids have ≥1 implementation.
 | `cap://software/code/inspect` | 1 | working |
 | `cap://software/agent/execute` | 5 | working |
 | `cap://general/agent/execute` | 5 | working (was 0 — A-3) |
-| `cap://software/git/operate` | **0** | **S2** — the compiler emits it for git/commit intents; the executor honestly reports "unavailable". Accepted gap, tracked |
+| `cap://software/git/operate` | **1** (`saf://git`) | **CLOSED** — deterministic git runtime: fixed subcommands, no shell, bounded messages, read-only without a message; 12 tests incl. hostile-message and path-escape cases |
 | `cap://research/web` | **0** | **S2** — accepted gap; needs network policy + provider boundary |
 | `cap://interaction/browser` | **0** | **S3** — accepted gap; belongs behind the trust pipeline |
 
-The three zero-coverage capabilities are the entire tracked backlog: `ontology/known-gaps.json`.
-**The roadmap is now `known-gaps.json` shrinking to empty** — not a wish list.
+Two capabilities now remain unimplemented (`cap://research/web`, `cap://interaction/browser`) and
+they are the entire tracked backlog: `ontology/known-gaps.json` went 3 → 2 when `saf://git` landed.
+**The roadmap is `known-gaps.json` shrinking to empty** — not a wish list.
 
 ### D. Dormant inventory — built but unwired
 
@@ -206,14 +207,14 @@ python3 tools/audit.py --json                     # same, machine-readable
 python3 tools/audit.py --render-ontology          # regenerate docs/11-ontology.md
 PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 113 tests OK
 PYTHONPATH=src python3 -m unittest tests.test_soak -v                 # == make soak
-cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 77 passed
+cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 90 passed
 pip install --break-system-packages coverage      # pip is PEP-668 managed in this sandbox
 cd .. && PYTHONPATH=src python3 -m coverage run --source=src/effective_scale -m unittest discover -s . -p 'test_*.py' -q && python3 -m coverage report   # 85 %
 cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m coverage run --source=saf -m pytest -q && python3 -m coverage report   # 88 %
 gh pr list --state all; gh issue list --state all  # 2 PRs, 0 issues — the evidence for Part 1
 ```
 
-Post-slice numbers (2026-10-01): kernel **113 tests** (was 87), SAF **77 tests** (was 64),
+Post-slice numbers (2026-10-01): kernel **113 tests** (was 87), SAF **90 tests** (was 64),
 entrypoints `main.py` **90 %** and `saf/cli/main.py` **83 %** (both were 0 %), audit **10 checks**
 (was 8), supervision verified across **5 deploy artifacts** by `C-ops`, scheduler capacity
 accounting fixed and pinned by **K23** (see A-7).

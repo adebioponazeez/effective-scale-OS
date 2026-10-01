@@ -54,12 +54,21 @@ class CapabilityExecutor:
         self.platform = platform
         self.resource_stats = resource_stats
 
+    def _state_dir(self) -> str:
+        """Where the fabric keeps its own state (evidence, backups, outbox)."""
+        if self.backups is not None and getattr(self.backups, "root", None) is not None:
+            return str(Path(self.backups.root).parent)
+        return str(Path(self.workspace) / ".saf")
+
     async def execute(self, task: Task, *, context: ExecutionContext | None = None,
                       execution_id: str | None = None) -> ExecutionResult:
         execution_id = execution_id or new_execution_id()
         ctx = context or ExecutionContext(task_id=execution_id, workspace=self.workspace,
                                           platform=self.platform)
-        ctx = ctx.model_copy(update={"task_id": execution_id, "workspace": self.workspace})
+        ctx = ctx.model_copy(update={
+            "task_id": execution_id, "workspace": self.workspace,
+            "metadata": {**ctx.metadata, "state_dir": self._state_dir()},
+        })
         started = time.time()
         caps = list(dict.fromkeys(task.required_capabilities))
         result = ExecutionResult(execution_id=execution_id, intent=task.intent, ok=False,

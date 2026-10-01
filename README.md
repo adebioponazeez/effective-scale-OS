@@ -17,7 +17,7 @@ audit is in [`GAP-AUDIT.md`](GAP-AUDIT.md); the machine-readable system model is
 |---|---|---|
 | The repo passes its own audit | `python3 tools/audit.py` | **0 unexpected findings**, 3 accepted (tracked, burn-down-able) |
 | Kernel suite | `make test` | **113 tests OK** (unit, integration, concurrency, chaos, CLI, audit, soak) |
-| SAF suite | `make test-saf` | **77 passed** |
+| SAF suite | `make test-saf` | **90 passed** |
 | Resilience kit has consumers | `tests/test_writer_isolation.py` | client writes are bounded by a bulkhead + breaker: saturated backlog or repeated infra failure ⇒ `503 overloaded` fast-fail; loops/readiness bypass both (`K24`) |
 | Scheduler capacity accounting | `tests/test_scheduler.py` | CPU and memory are separate budgets; regression tests fail against the pre-fix code (`K23`) |
 | Placement policies | `tests/test_scheduler.py` | `fifo`, `priority`, `bin_pack`, `round_robin` are four distinct behaviours — four of the six policy tests fail against the old fall-through |
@@ -27,7 +27,8 @@ audit is in [`GAP-AUDIT.md`](GAP-AUDIT.md); the machine-readable system model is
 | Operator entrypoints | `tests/test_cli.py` | `main.py` **0 %→90 %**, `saf/cli/main.py` **0 %→83 %** |
 | Probes are honest | `tests/test_cli.py::HealthSemanticsTest` | store death ⇒ `/v1/health/ready` 503 while `/v1/health/live` stays 200 |
 | Supervision is wired | `C-ops` audit over 5 artifacts | systemd · Windows SCM · k8s · compose · image all declare restart policy + probes |
-| Capabilities actually implemented | `build_registry()` | **7 of 10 declared ids** have ≥1 live resource |
+| Capabilities actually implemented | `build_registry()` | **8 of 10 declared ids** have ≥1 live resource (the git runtime closed one) |
+| Git intents produce real work | `saf/tests/test_git_runtime.py` | `cap://software/git/operate` → `saf://git`: bounded commits via `create_subprocess_exec` (no shell), read-only without a message, hostile messages stored literally |
 | Single-writer integrity | ADR-005 + `kernel.write(...)` | every mutation — including worker ops and health probes — goes through one writer thread |
 
 ## 2. The structural change that makes progress visible
@@ -72,6 +73,7 @@ now a build artifact you can run, not a document that can go missing.
 | **S1** Nothing ran it continuously; probes were decorative | systemd unit, Windows SCM installer, k8s startup/readiness/liveness + 30s drain, compose healthcheck, Docker `HEALTHCHECK`; readiness is now an end-to-end writer round-trip + store probe | `C-ops` audit; `tests/test_cli.py`; `deploy/*/README.md` |
 | **S1** Longevity unproven | `make soak`: 25 DAGs over the worker protocol, event delivery + ack, bounded attempts/leases/RSS, restart under load with no duplicate attempts | `tests/test_soak.py` (proved it fails when starved) |
 | **S3** Version literals disagreed in 3 places (+ a stale deploy tag) | One source: `effective_scale.__version__` imported by `server.py`/`kernel.py`; `C-versions` now scans sources **and** manifests | `tools/audit.py`; negative tests |
+| **S2** `cap://software/git/operate` was compiler-emitted but unimplemented — every git intent ended "unavailable" (the first entry in `known-gaps.json`) | New `saf://git` runtime: fixed subcommands through `create_subprocess_exec` (no shell, no interpolation), commit messages as one bounded argv element, mutations only when a message is supplied, `paths` confined to the repository; registered in the default registry | `tests/test_git_runtime.py` (twelve tests incl. hostile-message and path-escape cases); `known-gaps.json` shrank 3 → 2 |
 | **S2** `core/resilience.py` was tested in isolation and imported by nothing | Wired into the client-facing write path: `Bulkhead` bounds the writer backlog (`max_writer_backlog`, default 1024), `CircuitBreaker` opens after repeated infrastructure failures — both shed load with `503 overloaded` instead of buffering; loops and readiness probes bypass both because they are the recovery path; `/v1/status.writer` + `writer.*` gauges expose it | `tests/test_writer_isolation.py` (six tests incl. API-level shedding and breaker recovery); invariant **K24** |
 | **S1** The scheduler silently **overcommitted nodes**: memory was compared against CPU use and CPU against a lease count, so a node with 64 MB free could be handed a 512 MB workload | Compare like for like; regression tests for both budgets plus "a lease count is not a CPU budget"; invariant **K23** | Found by writing the policy tests; pre-fix code fails 2 of them |
 | **S2** `FIFO` / `PRIORITY` placement policies fell through to first-fit | Four distinct, documented policies: `fifo` (fill the oldest node), `priority` (affinity, then least loaded), `bin_pack`, `round_robin`; unknown values degrade deterministically | `tests/test_scheduler.py` (four of them fail on the old code) |
@@ -81,7 +83,7 @@ now a build artifact you can run, not a document that can go missing.
 
 | # | Severity | Gap | Why it stalls productivity | Fix |
 |---|---|---|---|---|
-| 1 | S2 | **Capability backlog**: `cap://software/git/operate`, `cap://research/web`, `cap://interaction/browser` have 0 implementations | These three are the entire roadmap; the compiler emits the git one today and the executor honestly reports it unavailable | Land git first (deterministic, local), then web behind a network policy, then browser behind the trust pipeline |
+| 1 | S2 | **Capability backlog**: `cap://research/web` and `cap://interaction/browser` have 0 implementations (git is now real) | These two are the entire roadmap; both need a network boundary before they can be trusted | Land web behind an explicit network policy with a provider boundary, then browser behind the trust pipeline |
 | 2 | S3 | **10 dormant modules** (model providers, `economy/scoring.py`, `transport/{grpc,local}.py`, `config/*.yaml`) | Built-but-unwired code is inventory that looks like capability | Wire or delete by the declared revisit trigger |
 | 3 | S3 | **CI does not gate on GitHub** — `.github/workflows/ci.yml` is ignored/untracked (token lacks `workflows` scope); PR #2 says "no checks reported". Tracked pipeline now runs `make audit` + `make soak` too | Local-only acceptance is a habit, not a guarantee | Activate the tracked `deploy/ci/ci.yml` via a token with the `workflows` scope or the Actions UI |
 | 4 | S3 | **`PyYAML` declared but never imported** in SAF (kernel is genuinely dependency-free; SAF does use `pydantic` for contracts) | Unused dependency in a supply-chain-conscious project | Drop it, or land the config loader that uses it |
@@ -93,8 +95,8 @@ now a build artifact you can run, not a document that can go missing.
    `make audit` exits 1 on any undeclared finding; `make ontology` regenerates the machine view.
 2. **Operate it, then observe it.** That was the S1 work above — supervisor + honest probes + soak.
    Every feature from here lands on a system that is watched.
-3. **Burn `known-gaps.json` down to empty.** Currently 3 items — a visible productivity chart.
-   Each closure deletes an accepted finding and the suite proves it.
+3. **Burn `known-gaps.json` down to empty.** Two items left (web, browser) after the git runtime
+   closed the first — a visible productivity chart, and the suite proves each closure.
 4. **Wire or delete the dormant inventory.** No zombie modules across two slices.
 5. **Activate CI.** One token scope away from converting the ratchet into enforcement.
 
