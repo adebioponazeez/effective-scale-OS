@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PYTHON ?= python3
 PYTHONPATH := src
 
-.PHONY: test test-v test-saf test-all audit ontology race smoke run clean fmt help
+.PHONY: test test-v test-saf test-all audit ontology race soak smoke run clean fmt help
 
 help: ## show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -23,6 +23,9 @@ test-saf: ## run the SAF subproject suite (needs pydantic; `pip install -e ".[te
 	cd sovereign-agent-fabric-v20 && PYTHONPATH=. $(PYTHON) -m pytest -q
 
 test-all: test test-saf ## kernel + SAF suites
+
+soak: ## sustained-load longevity test (loops alive, bounded state, restart under load)
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m unittest tests.test_soak -v
 
 race: ## stress: repeat the suite 5x (catches flaky interleavings)
 	@for i in 1 2 3 4 5; do \

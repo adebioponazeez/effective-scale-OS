@@ -97,6 +97,29 @@ class AuditTest(unittest.TestCase):
             ghost.unlink()
         self.assertTrue(any("ghost_version" in f.id for f in findings), [f.id for f in findings])
 
+    def test_operations_check_detects_a_missing_probe(self):
+        """Supervision wiring is a requirement, not a nicety: remove it and the audit must fire."""
+        compose = ROOT / "docker-compose.yml"
+        original = compose.read_text(encoding="utf-8")
+        try:
+            compose.write_text(original.replace("/v1/health/ready", "/v1/health/nope"),
+                               encoding="utf-8")
+            findings = audit.check_operations({})
+        finally:
+            compose.write_text(original, encoding="utf-8")
+        self.assertTrue(any(f.id == "C-ops:docker-compose.yml" for f in findings),
+                        [f.id for f in findings])
+
+    def test_version_check_detects_a_stale_manifest_tag(self):
+        """Deploy manifests pin the product version too: a stale image tag must fail."""
+        ghost = ROOT / "deploy" / "k8s" / "99-ghost.yaml"
+        ghost.write_text("image: effective-scale-os:0.0.1\n", encoding="utf-8")
+        try:
+            findings = audit.check_versions({"ontology": audit.load_ontology()})
+        finally:
+            ghost.unlink()
+        self.assertTrue(any("99-ghost.yaml" in f.id for f in findings), [f.id for f in findings])
+
     def test_deadcode_check_detects_an_undeclared_module(self):
         """A source file nobody imports and nobody declares must be reported."""
         ghost = ROOT / "src" / "effective_scale" / "ghost_module.py"

@@ -147,3 +147,22 @@ TOKEN=$(curl -fsS -XPOST http://127.0.0.1:8080/v1/tokens -H 'X-Admin-Token: dev'
 saf run --es http://127.0.0.1:8080 --token "$TOKEN" "refactor repository and run tests"
 saf worker --es http://127.0.0.1:8080 --token "$TOKEN" --workspace . --max-jobs 4
 ```
+
+## 7. Slice 3 addendum (2026-10-01 — operability + audit slice)
+
+The numbers in §6 are a point-in-time record of slice 2. Live numbers now come from
+`make audit` / the root `README.md`. What changed for this subproject in slice 3:
+
+- **`saf/cli/main.py` had 0 % coverage; it is now 83 %** with `tests/test_cli.py` covering every
+  branch: doctor, capabilities, resources+stats, help, `run` offline (queued vs `--no-queue`),
+  unreachable-kernel `sync`, empty-ledger `verify`/`ledger`, no-rollback-point `rollback`, an
+  unimplemented capability (`git/operate`) exiting 2, and a full `execute → verify → ledger`
+  lifecycle. SAF suite: 77 tests, 88 % statement coverage.
+- **`saf sync` no longer reports "ok" while deferring everything**: a deferred entry now yields
+  `status: kernel_unavailable` and exit code 1 with the outbox intact, so cron and CI notice.
+- **Capability claims are true**: all five CLI adapters now claim `cap://general/agent/execute`
+  (the ontology said five resources satisfied it; the live registry had zero). Enforced by the
+  `C-caps` audit check in the root `tools/audit.py`.
+- Still open for SAF: `cap://software/git/operate` has no runtime (the compiler emits it; the
+  executor reports it unavailable), and the dormant provider/model modules await credentials —
+  both tracked in `ontology/known-gaps.json` and the root `GAP-AUDIT.md`.

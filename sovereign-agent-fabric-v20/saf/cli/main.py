@@ -121,8 +121,16 @@ def _sync(args) -> int:
     except TransportError as exc:
         _print({"status": "kernel_unavailable", "error": str(exc), "outbox": outbox.summary()})
         return 1
-    _print({"status": "ok", **summary, "outbox": outbox.summary()})
-    return 0
+    # A deferred entry means the kernel did not accept it: say so in the status and the
+    # exit code, or cron/scripts would read "ok" while nothing was synced.
+    if summary["errors"]:
+        status = "errors"
+    elif summary["deferred"]:
+        status = "kernel_unavailable"
+    else:
+        status = "ok"
+    _print({"status": status, **summary, "outbox": outbox.summary()})
+    return 0 if status == "ok" else 1
 
 
 def _verify(args) -> int:

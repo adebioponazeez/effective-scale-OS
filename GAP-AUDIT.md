@@ -1,8 +1,9 @@
 # GAP-AUDIT.md — effective-scale-OS, 2026-10-01
 
-Dispassionate, evidence-anchored audit of this repository as it stands at commit `04f00e0`
-(branch `arena/01a0f730-effective-scale-os`). Every claim below is reproducible with the command
-shown next to it. No claim in this document rests on memory, intuition, or the project's own prose.
+Dispassionate, evidence-anchored audit of this repository, first written at `04f00e0` and revised
+during the operability slice (branch `arena/01a0f730-effective-scale-os`). Every claim below is
+reproducible with the command shown next to it. No claim rests on memory, intuition, or the project's
+own prose — including the corrections in Part 2.1, which record where this document itself was wrong.
 
 Scope: the whole checkout — `src/effective_scale` (kernel v0.5.0), `sovereign-agent-fabric-v20`
 (SAF 0.2.0), `tests/`, `docs/`, `deploy/`, git history, GitHub state.
@@ -48,7 +49,7 @@ claim and the code that makes it true**. Under that convention:
 **The structural fix is now in the repo, not in this document:**
 `ontology/system.json` (machine-readable: planes, entities, transition tables, invariants K1–K20
 each naming its enforcement point *and* its test, capabilities, claims, dormant modules) +
-`tools/audit.py` (9 mechanical checks over that ontology) + `ontology/known-gaps.json` (the accepted
+`tools/audit.py` (10 mechanical checks over that ontology) + `ontology/known-gaps.json` (the accepted
 gaps; **may only shrink**) + `tests/test_audit.py` (the ratchet is itself tested, including negative
 tests that inject synthetic drift and require each check to fire). From now on "what lacks" is a
 build artifact — `python3 tools/audit.py` — not a document that can go missing.
@@ -59,12 +60,31 @@ build artifact — `python3 tools/audit.py` — not a document that can go missi
 
 Severity: **S1** = blocks productive operation today · **S2** = blocks scaling/trust · **S3** = debt.
 
+### Part 2.1 — Corrections to this document
+
+An audit that cannot report its own errors is not an audit. Two corrections from the operability
+slice:
+
+- **F-3 was wrong** (see the row): compose *did* have a healthcheck and a restart policy. The
+  error came from reading one file partially instead of scanning for the property — which is
+  precisely the failure mode `C-ops` now makes impossible for deployment artifacts.
+- **B-1's exit criteria were optimistic in wording**: "0 % coverage" became 90 %/83 %, but
+  coverage is not correctness — the black-box subprocess test (boot → token → HTTP → SIGTERM →
+  reopen store) is the part that would have caught a real break, and it is the part worth keeping.
+- **The soak test was initially a false negative**: a first version "passed" while no workflow
+  ever completed, because the driver gave up before the engine dispatched, and the assertion only
+  checked "terminal, not succeeded". It was rewritten to assert `succeeded` for every DAG plus
+  exact attempt accounting, and then proved to **fail** when starved. This is the same lesson as
+  the negative audit tests: a check that cannot fail is prose.
+
 ### A. Drift and dishonesty (the class that hides all others)
 
 | id | Sev | Gap | Evidence | Fix | Exit criteria |
 |---|---|---|---|---|---|
 | A-1 | S2 | Docs drifted from code: 6 worker routes registered but undocumented, and one route (`GET /v1/leases`) documented in neither direction | `tools/audit.py` `C-routes:*` fired on 6 ids before this session's doc fix; now **0** | Done this session: `docs/09-api-reference.md` documents all worker routes | `C-routes:*` stays empty; check is wired into the suite |
 | A-2 | S3 | Duplicate system clock (`_SysClock` in `core/kernel.py` re-implementing `ports/clock.SystemClock`) — two sources of truth for time, the exact thing the ports pattern exists to prevent | `C-deadcode`/manual diff; deleted this session | Done | One `SystemClock`; grep finds no duplicate |
+| A-5 | S2 → CLOSED | **Readiness was decorative.** `/v1/health/ready` read `store.get_meta("schema_version")`, which is served from the in-memory snapshot — so a store whose connection was dead still answered `200 {"ready": true}`, and the k8s readiness probe would have kept feeding traffic to a kernel that could not commit | Found while writing the entrypoint test; reproduced by closing the store connection under a live API | Fixed: readiness asks the writer thread to run the store's own `ping()` (`SELECT 1` on the kernel's connection); store death ⇒ `503 kernel_not_ready`, while `/v1/health/live` stays 200 because the process is recoverable. `Store.ping` is a port method; `MemoryStore` returns True | Oracle 503 / liveness 200 asserted in `tests/test_cli.py::HealthSemanticsTest`; invariant K21 |
+| A-6 | S3 → CLOSED | **Deploy-manifest version drift:** `deploy/k8s/03-deployment.yaml` pinned `effective-scale-os:0.4.0` while the kernel was 0.5.0 | Caught by extending `C-versions` to scan manifests | Fixed: tag pinned to 0.5.0; `C-versions` now fails on any stale image tag (negative test injects one) | `C-versions:manifest:*` stays empty |
 | A-4 | S3 | **Version literals disagreed**: `__init__.py` and `/v1/status` said `0.4.0`, `pyproject.toml` said `0.4.0`, the kernel start log said `0.5.0` — three answers to "which version is running?" | Found while writing this report; `grep -rn '"[0-9]\+\.[0-9]\+\.[0-9]\+"' src/` | Fixed: single source `effective_scale.__version__` imported by `server.py`/`kernel.py`, `pyproject.toml` aligned, new `check_versions` audit + negative tests added | `C-versions:*` empty; no source file outside `__init__.py` may hold a version literal (one justified exception declared in the ontology: SAF's capability-schema version) |
 | A-3 | S2 | Capability claims were false: the ontology said 5 agent resources satisfy `cap://general/agent/execute`; the running registry had **0** | `audit.py` `C-caps:drift` fired; registry dump before/after | Done: all 5 CLI adapters now claim it; `build_registry()` reports `cap://general/agent/execute: 5` | `C-caps:drift:*` empty, asserted by probe |
 
@@ -74,10 +94,12 @@ Severity: **S1** = blocks productive operation today · **S2** = blocks scaling/
 
 | id | Sev | Gap | Evidence | Fix | Exit criteria |
 |---|---|---|---|---|---|
-| B-1 | **S1** | **The operator surface is the only untested code.** `src/effective_scale/main.py` = **0 % coverage (74 stmts)**; `sovereign-agent-fabric-v20/saf/cli/main.py` = **0 % (185 stmts)**. 259 statements of the two entrypoints nobody runs in CI | `coverage report` (see Part 4) | Extract each entrypoint into a testable `main(argv) -> int`; smoke-test server boot + one HTTP round trip; CLI test drives the full `plan → execute → verify` lifecycle on a temp DB | Both files >80 %; `make test-all` fails if boot/CLI breaks |
-| B-2 | **S1** | **Nothing runs it continuously.** No systemd unit / Windows service / k8s probe wiring for *this* process, and no soak test. Crash-consistency is tested (`tests/test_chaos.py`: WAL survives abrupt close, restart requeues without double-commit), but "runs for a week without leaking or wedging" is unproven | `find . -name '*.service' -o -name '*.ps1' -o -name 'Dockerfile*'` → only root `Dockerfile`/`docker-compose.yml` (kernel, demo mode), `deploy/k8s/*` (manifests, no probes beyond defaults), `bootstrap.ps1` | Add (a) a supervisor unit + restart policy, (b) probes that assert `/healthz` and store liveness, (c) a 24 h soak driver test that runs ticks and asserts bounded memory/lease-churn invariants | Supervisor restarts cleanly after `kill -9`; soak test green in CI-nightly |
+| B-1 | **S1 → CLOSED** | ~~The operator surface is the only untested code~~ **Fixed.** `serve()` was extracted from `main()` so the startup path is testable in-process; `tests/test_cli.py` now boots the real module in a subprocess, mints a token, reads workflows/attempts over HTTP, SIGTERMs it and reopens the store for durability, and `sovereign-agent-fabric-v20/tests/test_cli.py` covers all 11 CLI branches (offline outbox, unreachable kernel, unimplemented capability, execute→verify lifecycle) | `coverage report` (Part 4): `main.py` **90 %**, `saf/cli/main.py` **83 %** | Done: `make test` fails if boot or any CLI branch breaks | Both files >80 % — **met** |
+| B-2 | **S1 → CLOSED (bounded)** | ~~Nothing runs it continuously; probes are decorative~~ **Fixed, with one honest residue.** Supervision now ships for every runtime — systemd unit (Restart=always, 35s drain, hardening), Windows SCM installer (`sc.exe failure` restart ladder), k8s startup/readiness/liveness probes, compose healthcheck, image `HEALTHCHECK` — and `C-ops` fails the build if any of them loses its restart policy or probe. `make soak` (tests/test_soak.py) runs 25 DAGs through the worker protocol with event delivery, asserting all workflows `succeed`, exact 2N attempt round-trips, bounded attempts/leases/RSS, no loop errors, and no duplicate attempts after an abrupt restart | `tools/audit.py` `C-ops`; `make soak`; `deploy/systemd/README.md` | **Residue:** the soak is a ~4 s bounded check, not a 24 h campaign on real hardware — that remains open below (B-2b) | `C-ops` green + soak green — **met** |
+| B-2b | S3 | **No long-duration campaign.** The soak is minutes-short: it cannot catch slow leaks (file descriptors, WAL growth, checkpoint starvation) that only appear over hours | `tests/test_soak.py` runtime ~4 s | Add a nightly job running the soak driver for 24 h against a temp store, asserting WAL size, fd count and RSS at hourly checkpoints | A 24 h run with monotonic (bounded) WAL, fds and RSS curves |
 | B-3 | S2 | **The resilience kit has zero production consumers.** `core/resilience.py` (circuit breaker, bulkhead, retry) is unit-tested and imported by nothing | `coverage` shows 73 % from tests alone; import-graph check in `audit.py` `C-deadcode` flags consumers absent | Either wrap the store + outbound transports (SAF `transport/effective_scale.py`, `transport/outbox.py`) in the breaker/bulkhead, or delete the module | A product call path is wrapped and a test proves the breaker opens under induced failure |
 | B-4 | S2 | **Scheduling policies are decorative.** `SchedulingPolicy.FIFO` and `.PRIORITY` both fall through to first-fit; only the workload pass sorts by `-priority` | `src/effective_scale/core/scheduler.py:93` — `else:  # FIFO / PRIORITY -> first-fit` | Implement the policies (priority-ordered node scan / arrival-ordered), or collapse the enum to what exists and say so | A test where FIFO and PRIORITY place the *same* workload on *different* nodes |
+| B-6 | S2 → CLOSED | ~~`saf sync` exited 0 while deferring every entry~~ **Fixed:** sync now reports `kernel_unavailable` and exits 1 when entries are deferred, keeps the outbox intact, and a test pins the contract | found in `tests/test_cli.py` | Done | `test_sync_reports_kernel_unavailable_with_outbox_intact` |
 | B-5 | S2 | **Progress is invisible while it happens.** No dashboard, no alert rules, no "is the fleet actually producing?" metric. The status surfaces (`/v1/status`, `/v1/attempts`) exist but nothing consumes them | Manual: repo has metrics counters but no consumer/threshold file | Define 5 SLOs (attempt-throughput, claim latency, lease-expiry retries, DLQ delta, outbox backlog) and one alert rule per SLO | `make smoke-soak` asserts the SLOs over a synthetic fleet run |
 
 ### C. Capability coverage — what the system actually *does* for the user
@@ -129,7 +151,7 @@ the largest absolute miss), `core/leader.py` 75 %, `transport/effective_scale.py
 |---|---|---|---|---|
 | F-1 | **S1** | **CI does not actually gate anything on GitHub.** `.github/workflows/ci.yml` is gitignored/untracked because the push token lacks the `workflows` scope; PR #2 shows "no checks reported" | `gh pr view 2`; file untracked + gitignored | Activate via a token with `workflows` scope (`git add -f`) or paste the pipeline in the Actions UI; tracked copy lives at `deploy/ci/ci.yml` |
 | F-2 | S3 | PyYAML is declared as a SAF dependency but never imported; the kernel is genuinely stdlib-only (`dependencies = []`) and SAF does use `pydantic` for its contracts | `grep -rn 'import yaml'` → 0 hits; `grep -rn 'import pydantic'` → `saf/core/contracts.py` | Drop PyYAML from `sovereign-agent-fabric-v20/pyproject.toml`, or keep only if a config loader lands |
-| F-3 | S3 | Docker/compose describe kernel in `--demo` mode; SAF has no image, and the compose file has no healthcheck/restart policy | `Dockerfile`, `docker-compose.yml` | Non-demo entrypoint + `restart: unless-stopped` + healthcheck |
+| F-3 | S3 | **Corrected claim (this document was wrong).** Earlier revisions of this row asserted the compose file had *no* healthcheck or restart policy. That was false: `docker-compose.yml` already had `healthcheck` (on `/v1/health/ready`) and `restart: unless-stopped` — the claim came from a partial read, not a check. What was genuinely missing: the **image** had no `HEALTHCHECK`, and the k8s manifest lacked a `startupProbe`/`terminationGracePeriodSeconds` | `git show 04f00e0:docker-compose.yml`; `tools/audit.py` `C-ops` now enforces the real requirement | Added `HEALTHCHECK` to the `Dockerfile`, `startupProbe` + 30s grace to k8s, and the `C-ops` check so prose can no longer substitute for inspection | `C-ops` green across all five artifacts |
 
 ---
 
@@ -172,18 +194,23 @@ unreal. The levers below are ordered by return-per-hour, and each is a small, te
 
 ```bash
 cd /home/user/effective-scale-OS
-python3 tools/audit.py                            # 0 unexpected findings; 3 known (accepted) gaps (9 checks)
+python3 tools/audit.py                            # 0 unexpected findings; 3 known (accepted) gaps (10 checks)
 python3 tools/audit.py --json                     # same, machine-readable
 python3 tools/audit.py --render-ontology          # regenerate docs/11-ontology.md
-PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 87 tests OK (includes test_audit, 12 audit tests)
-cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 64 passed
+PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 98 tests OK
+PYTHONPATH=src python3 -m unittest tests.test_soak -v                 # == make soak
+cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 77 passed
 pip install --break-system-packages coverage      # pip is PEP-668 managed in this sandbox
-cd .. && PYTHONPATH=src python3 -m coverage run --source=src/effective_scale -m unittest discover -s . -p 'test_*.py' -q && python3 -m coverage report   # 81 %
-cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m coverage run --source=saf -m pytest -q && python3 -m coverage report   # 76 %
+cd .. && PYTHONPATH=src python3 -m coverage run --source=src/effective_scale -m unittest discover -s . -p 'test_*.py' -q && python3 -m coverage report   # 85 %
+cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m coverage run --source=saf -m pytest -q && python3 -m coverage report   # 88 %
 gh pr list --state all; gh issue list --state all  # 2 PRs, 0 issues — the evidence for Part 1
 ```
 
-## Part 5 — Attachments
+Post-slice numbers (2026-10-01): kernel **98 tests / 85 %** (was 87 / 81 %), SAF **77 tests /
+88 %** (was 64 / 76 %), entrypoints `main.py` **90 %** and `saf/cli/main.py` **83 %** (both were
+0 %), audit **10 checks** (was 8), supervision verified across **5 deploy artifacts** by `C-ops`.
+
+## Part 5 — Attachments (still blocked)
 
 The attached **PDF and image never reached the workspace**: no `*.pdf` or image file exists anywhere
 under `/home/user` or `/tmp`, and `/tmp/arena-workspace/` contains only this session's own code

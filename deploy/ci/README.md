@@ -1,6 +1,6 @@
 # CI definition (activation required)
 
-`ci.yml` in this directory is the full pipeline: kernel suite + race-style stress, SAF
+`ci.yml` in this directory is the full pipeline: ontology/docs drift audit, kernel suite, race-style stress, longevity soak, SAF
 subproject suite (including the live embedded-kernel worker test), container build with a
 boot + health check, and a Go-port gate that activates automatically once `go.mod` lands.
 

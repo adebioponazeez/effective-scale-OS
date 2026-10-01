@@ -97,6 +97,14 @@ class SQLiteStore(MemoryStore):
         self._check_schema()
         self._load_all()
 
+    def ping(self) -> bool:
+        """True only if the kernel's own connection can still execute a statement."""
+        try:
+            self._conn.execute("SELECT 1").fetchone()
+            return True
+        except Exception:  # noqa: BLE001 — any failure means "not ready", never a 500
+            return False
+
     def close(self) -> None:
         if self._conn is not None:
             try:

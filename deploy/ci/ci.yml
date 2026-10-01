@@ -20,10 +20,14 @@ jobs:
           python-version: "3.11"
       - name: Byte-compile (no syntax errors anywhere)
         run: python -m compileall -q src tests sovereign-agent-fabric-v20/saf
-      - name: Kernel suite
+      - name: Ontology + docs drift audit (fails on any undeclared finding)
+        run: make audit
+      - name: Kernel suite (includes audit, CLI, chaos and soak tests)
         run: make test
       - name: Race-style stress (5x, catches flaky interleavings)
         run: make race
+      - name: Longevity soak (loops alive, bounded state, restart under load)
+        run: make soak
 
   saf:
     name: SAF subproject (execution slice)

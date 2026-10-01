@@ -146,6 +146,21 @@ class Kernel:
             # SingleLeader is by definition always-leader: no loop to monitor.
             self._last_progress.pop("leader", None)
 
+    def ready(self, timeout: float = 2.0) -> bool:
+        """Ready = loops alive, the writer queue drains, and the store answers on the
+        kernel's own connection. Deliberately end-to-end: it is what the k8s readiness
+        probe asserts, and it cannot be satisfied by a cached snapshot."""
+        if not self.running():
+            return False
+        try:
+            return bool(self.write(lambda: self.store.ping(), timeout=timeout))
+        except Exception:  # noqa: BLE001 — a wedged writer or dead store is "not ready"
+            return False
+
+    def running(self) -> bool:
+        """True while every started loop thread is alive (backing /v1/health/live)."""
+        return bool(self._threads) and all(t.is_alive() for t in self._threads)
+
     def stop(self) -> None:
         self.logger.log("kernel.shutdown_begin", info=True)
         self._stop.set()

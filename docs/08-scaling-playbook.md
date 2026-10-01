@@ -76,3 +76,34 @@ Consequences for scaling:
 - Writes: single writer, ~5–20 µs/op in WAL; bursts queue (observable via `writes` counter).
 - Workflow dispatch scan: O(nodes) per tick — batch large DAGs (`max_concurrency` bounds
   dispatch width; 1k-node DAGs measured OK at 500 ms tick).
+
+## 6. Operating it (supervision is part of the scaling story)
+
+Scaling a fleet you cannot keep alive is decoration. The kernel is single-writer and
+WAL-backed: `tests/test_chaos.py` proves an abrupt close replays without double-commit, and
+`tests/test_soak.py` proves sustained load keeps every loop alive with bounded state and no
+duplicate attempts after an abrupt restart. So the operating policy is **restart, do not
+nurse** — and every supervisor we ship does exactly that (enforced by the `C-ops` audit check):
+
+| Runtime | Artifact | Policy |
+|---|---|---|
+| Linux | `deploy/systemd/effective-scale.service` | `Restart=always`, `RestartSec=2`, 35s SIGTERM drain, hardening, `ReadWritePaths=/var/lib/effective-scale` |
+| Windows | `deploy/windows/install-service.ps1` | SCM automatic start + `sc.exe failure` restart-2s/2s/5s |
+| Kubernetes | `deploy/k8s/03-deployment.yaml` | `startupProbe` (live), `readinessProbe` (ready), `livenessProbe` (live), 30s grace, `replicas: 1` |
+| Compose | `docker-compose.yml` | healthcheck on `/v1/health/ready`, `restart: unless-stopped` |
+| Image | `Dockerfile` | `HEALTHCHECK` against `/v1/health/ready` |
+
+Probe semantics matter when a probe drives traffic:
+
+- `GET /v1/health/live` — liveness: the process is up and its loops are alive; it never touches
+  the store, so a recoverable store failure does not get the process killed.
+- `GET /v1/health/ready` — readiness: the kernel can *commit* — it asks the writer thread to run
+  the store's own probe (`SELECT 1` on the kernel's connection). A dead store or a wedged writer
+  returns 503 while `live` stays 200. Asserted in `tests/test_cli.py::HealthSemanticsTest`.
+
+Before you scale out, run the longevity check on your own hardware:
+
+```bash
+make soak     # sustained load: terminal workflows, bounded attempts/leases, no loop errors
+make audit    # every deployment artifact still declares probes + a restart policy (C-ops)
+```

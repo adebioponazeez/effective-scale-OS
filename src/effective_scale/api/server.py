@@ -181,6 +181,11 @@ class ApiServer:
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
+    @property
+    def port(self) -> int | None:
+        """The bound TCP port (useful when the configured port is 0)."""
+        return self._httpd.server_address[1] if self._httpd else None
+
     def route(self, methods: str, pattern: str, fn: Callable, *, public: bool = False,
               scope: str = "read", admin: bool = False) -> None:
         import re
@@ -189,14 +194,28 @@ class ApiServer:
         self.routes.append((methods.split(","), {"regex": compiled, "fn": fn,
                                                  "public": public, "scope": scope, "admin": admin}))
 
+    def _live(self, h, p, q, t):
+        """Liveness: the process is up and its loops are alive. Never touches the store."""
+        live = self.kernel.running()
+        return 200 if live else 503, {"ok": live, "live": live}, {}
+
+    def _ready(self, h, p, q, t):
+        """Readiness: the kernel can actually commit. A dead store or a wedged writer
+        must report not-ready, never a stack trace."""
+        try:
+            ready = self.kernel.ready()
+        except Exception:  # noqa: BLE001 — a probe must never raise
+            ready = False
+        if not ready:
+            return 503, {"ok": False, "ready": False, "error": "kernel_not_ready"}, {}
+        return 200, {"ok": True, "ready": True}, {}
+
     def _registered(self) -> None:
         k = self.kernel
         r = self.route
 
-        r("GET", "/v1/health/live", lambda h, p, q, t: (200, {"ok": True, "live": True}, {}), public=True)
-        r("GET", "/v1/health/ready", lambda h, p, q, t: (
-            200 if k.store.get_meta("schema_version") is not None else 503,
-            {"ok": True, "ready": True}, {}), public=True)
+        r("GET", "/v1/health/live", self._live, public=True)
+        r("GET", "/v1/health/ready", self._ready, public=True)
         r("GET", "/v1/status", self._status, public=True)
         r("GET", "/v1/metrics", self._metrics, public=True)
 

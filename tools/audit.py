@@ -406,6 +406,7 @@ def check_dead_modules(ctx) -> list[Finding]:
 
 
 VERSION_RE = re.compile(r"""["'](\d+\.\d+\.\d+)["']""")
+MANIFEST_VERSION_RE = re.compile(r"""(effective-scale-os:)(\d+\.\d+\.\d+)""")
 
 
 def _declared_version(path: pathlib.Path) -> str | None:
@@ -445,6 +446,21 @@ def check_versions(ctx) -> list[Finding]:
                 title=f"{name} version does not match the ontology",
                 detail=f"ontology says {want}; " + ", ".join(f"{k}={v}" for k, v in disagree.items()),
                 evidence=[str(init_file.relative_to(ROOT)), str(pyproject.relative_to(ROOT))]))
+    # deploy manifests carry the product version in image tags: same single-source rule
+    kernel_version = expected.get("kernel")
+    manifests = sorted((ROOT / "deploy").rglob("*.yaml")) + [ROOT / "docker-compose.yml"]
+    for path in manifests:
+        if not path.exists():
+            continue
+        rel = str(path.relative_to(ROOT))
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            match = MANIFEST_VERSION_RE.search(line)
+            if match and match.group(2) != kernel_version:
+                findings.append(Finding(
+                    id=f"C-versions:manifest:{rel}", check="versions", severity="medium",
+                    title="deploy manifest pins a stale kernel image tag",
+                    detail=f"{rel}:{lineno} pins {match.group(2)}, ontology says {kernel_version}",
+                    evidence=[f"{rel}:{lineno}"]))
     for root in (ROOT / "src", ROOT / "sovereign-agent-fabric-v20" / "saf"):
         for path in sorted(root.rglob("*.py")):
             rel = str(path.relative_to(ROOT))
@@ -459,6 +475,48 @@ def check_versions(ctx) -> list[Finding]:
                     detail=f"{rel}:{line} contains {match.group(1)}; import __version__ instead "
                            f"(or declare the file in ontology.version_literals_allowed with a reason)",
                     evidence=[f"{rel}:{line}"]))
+    return findings
+
+
+# Deployment artifacts must not be decoration: each one must say how the process comes back
+# and how a supervisor knows it is healthy.
+OPS_REQUIREMENTS = [
+    ("deploy/systemd/effective-scale.service",
+     ["[Service]", "Restart=always", "ExecStart=", "KillSignal=SIGTERM", "ReadWritePaths="],
+     "unit must define restart policy, exec line, SIGTERM drain and its writable path"),
+    ("deploy/k8s/03-deployment.yaml",
+     ["startupProbe", "readinessProbe", "/v1/health/ready", "livenessProbe", "/v1/health/live",
+      "terminationGracePeriodSeconds"],
+     "manifest must wire probes to the real health routes and allow a graceful drain"),
+    ("docker-compose.yml",
+     ["healthcheck", "/v1/health/ready", "restart:"],
+     "compose service must declare a healthcheck and a restart policy"),
+    ("Dockerfile",
+     ["HEALTHCHECK", "/v1/health/ready"],
+     "image must declare a healthcheck against the readiness route"),
+    ("deploy/windows/install-service.ps1",
+     ["sc.exe failure", "New-Service", "Start-Service"],
+     "service installer must set a failure/restart action"),
+]
+
+
+def check_operations(ctx) -> list[Finding]:
+    """C-ops: supervision and probes exist for every runtime we ship."""
+    findings: list[Finding] = []
+    for rel, required, why in OPS_REQUIREMENTS:
+        path = ROOT / rel
+        if not path.exists():
+            findings.append(Finding(
+                id=f"C-ops:missing:{rel}", check="operations", severity="high",
+                title="deployment artifact is missing entirely", detail=why, evidence=[rel]))
+            continue
+        text = path.read_text(encoding="utf-8")
+        missing = [token for token in required if token not in text]
+        if missing:
+            findings.append(Finding(
+                id=f"C-ops:{rel}", check="operations", severity="high",
+                title="deployment artifact lacks supervision/probe wiring",
+                detail=f"{rel} is missing {missing} — {why}", evidence=[rel]))
     return findings
 
 
@@ -514,7 +572,7 @@ def check_test_counts(ctx) -> list[Finding]:
 
 
 CHECKS = [check_stdlib_only, check_routes, check_states, check_persisters,
-          check_versions,
+          check_versions, check_operations,
           check_capabilities, check_dead_modules, check_invariants, check_test_counts]
 
 

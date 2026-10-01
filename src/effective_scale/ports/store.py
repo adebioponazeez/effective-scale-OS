@@ -89,6 +89,11 @@ class Store(abc.ABC):
     @abc.abstractmethod
     def open(self) -> None: ...
 
+    def ping(self) -> bool:
+        """Cheap backend probe used by readiness. Runs on the store's own connection,
+        so callers must invoke it from the writer thread (Kernel.ready does)."""
+        return True
+
     @abc.abstractmethod
     def close(self) -> None: ...
 

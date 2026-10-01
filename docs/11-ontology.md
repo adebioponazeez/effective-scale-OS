@@ -16,6 +16,7 @@ Product versions: kernel `0.5.0` · saf `0.2.0` — declared once, enforced by `
 | safety | `saf/core/policy.py, saf/evidence/*, saf/tools/backup.py` | Policy gate, autonomy levels, evidence ledger, save-proof, rollback |
 | capability | `saf/core/{compiler,resolver}.py, saf/runtime/executor.py` | Intent compilation, capability resolution, resources, execution lifecycle |
 | observability | `src/effective_scale/observability/registry.py, saf/runtime/stats.py` | Structured logs, metrics, trace ids, audit trail |
+| operations | `deploy/{systemd,windows,k8s} + Dockerfile/docker-compose.yml` | supervision, restart policy, health probes and longevity; restart-safety is a kernel property (K22), enforced by the supervisor contract (C-ops) |
 
 ## Entities
 
@@ -65,6 +66,8 @@ Product versions: kernel `0.5.0` · saf `0.2.0` — declared once, enforced by `
 | K18 | offline submissions are durable and replayed idempotently (payload hash as idempotency key) | `sovereign-agent-fabric-v20/saf/transport/outbox.py` | `sovereign-agent-fabric-v20/tests/test_outbox.py` |
 | K19 | a worker cannot outlive its lease silently: it heartbeats and reports deadline_exceeded instead of a late success | `sovereign-agent-fabric-v20/saf/runtime/worker.py` | `sovereign-agent-fabric-v20/tests/test_worker.py` |
 | K20 | the reference kernel has zero third-party runtime dependencies | `ontology/system.json#claims.C-stdlib` | `tests/test_audit.py` |
+| K21 | readiness reflects the ability to commit: /v1/health/ready is 503 whenever the kernel cannot execute a store statement or its writer is wedged, while /v1/health/live stays 200 because the process is still recoverable | `src/effective_scale/api/server.py` | `tests/test_cli.py` |
+| K22 | sustained operation keeps every background loop alive with bounded durable state, and an abrupt restart resumes work without duplicating attempts | `src/effective_scale/core/kernel.py` | `tests/test_soak.py` |
 
 ## Capabilities
 
@@ -93,7 +96,8 @@ Product versions: kernel `0.5.0` · saf `0.2.0` — declared once, enforced by `
 | `C-deadcode` | no module is unreachable: every source module is referenced outside its own package or declared dormant with a reason | dead_modules | medium |
 | `C-invariants` | every invariant names an enforcement point and a test that exists | invariants | high |
 | `C-test-counts` | test counts stated in the READMEs match the tests actually discoverable | test_counts | low |
-| `C-versions` | product versions are declared once: __init__.py, pyproject and this ontology agree, and no other source file hardcodes a version literal | versions | medium |
+| `C-versions` | product versions are declared once: __init__.py, pyproject, the ontology and the deploy manifests (image tags) agree, and no other source file hardcodes a version literal | versions | medium |
+| `C-ops` | every deployment artifact declares a restart policy and wires a health probe to /v1/health/ready (readiness) and /v1/health/live (liveness) | operations | high |
 
 ## Dormant modules (declared, with a revisit trigger)
 

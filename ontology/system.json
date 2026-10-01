@@ -48,6 +48,11 @@
       "id": "observability",
       "description": "Structured logs, metrics, trace ids, audit trail",
       "owned_by": "src/effective_scale/observability/registry.py, saf/runtime/stats.py"
+    },
+    {
+      "id": "operations",
+      "owned_by": "deploy/{systemd,windows,k8s} + Dockerfile/docker-compose.yml",
+      "description": "supervision, restart policy, health probes and longevity; restart-safety is a kernel property (K22), enforced by the supervisor contract (C-ops)"
     }
   ],
   "entities": [
@@ -531,6 +536,20 @@
       "statement": "the reference kernel has zero third-party runtime dependencies",
       "enforced_by": "ontology/system.json#claims.C-stdlib",
       "tested_by": "tests/test_audit.py"
+    },
+    {
+      "id": "K21",
+      "plane": "operations",
+      "statement": "readiness reflects the ability to commit: /v1/health/ready is 503 whenever the kernel cannot execute a store statement or its writer is wedged, while /v1/health/live stays 200 because the process is still recoverable",
+      "enforced_by": "src/effective_scale/api/server.py",
+      "tested_by": "tests/test_cli.py"
+    },
+    {
+      "id": "K22",
+      "plane": "operations",
+      "statement": "sustained operation keeps every background loop alive with bounded durable state, and an abrupt restart resumes work without duplicating attempts",
+      "enforced_by": "src/effective_scale/core/kernel.py",
+      "tested_by": "tests/test_soak.py"
     }
   ],
   "capabilities": [
@@ -668,9 +687,15 @@
     },
     {
       "id": "C-versions",
-      "statement": "product versions are declared once: __init__.py, pyproject and this ontology agree, and no other source file hardcodes a version literal",
+      "statement": "product versions are declared once: __init__.py, pyproject, the ontology and the deploy manifests (image tags) agree, and no other source file hardcodes a version literal",
       "check": "versions",
       "severity": "medium"
+    },
+    {
+      "id": "C-ops",
+      "statement": "every deployment artifact declares a restart policy and wires a health probe to /v1/health/ready (readiness) and /v1/health/live (liveness)",
+      "check": "operations",
+      "severity": "high"
     }
   ],
   "dormant": [
