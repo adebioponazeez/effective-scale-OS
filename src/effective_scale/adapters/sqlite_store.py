@@ -327,7 +327,9 @@ def _attempt_from_state(s: dict) -> Attempt:
     return Attempt(id=s["id"], workflow_id=s["workflow_id"], node_id=s["node_id"],
                    attempt_no=s["attempt_no"], lease_id=s.get("lease_id"),
                    status=AttemptStatus(s["status"]), started_at=s["started_at"],
-                   finished_at=s.get("finished_at"), error=s.get("error"), trace_id=s.get("trace_id", ""))
+                   finished_at=s.get("finished_at"), error=s.get("error"), trace_id=s.get("trace_id", ""),
+                   worker_id=s.get("worker_id"), worker_nonce=s.get("worker_nonce"),
+                   deadline=s.get("deadline"), result=s.get("result"))
 
 
 def _event_from_state(s: dict) -> EventMsg:

@@ -18,6 +18,7 @@ import random
 from typing import Any
 
 from ..domain.errors import ConflictError, NotFoundError, ValidationError
+from ..domain.ids import new_nonce
 from ..domain.models import Attempt, AttemptStatus
 from ..domain.models import NodeStatus, Workflow, WorkflowNode, WorkflowStatus
 from ..domain.states import transition
@@ -143,14 +144,45 @@ class WorkflowEngine:
     # ------------------------------------------------------------------ completion
 
     def attempt_complete(self, attempt_id: str, *, ok: bool, error: str | None = None,
-                         trace_id: str = "", timed_out: bool = False) -> None:
+                         trace_id: str = "", timed_out: bool = False,
+                         namespace: str | None = None, worker_id: str | None = None,
+                         nonce: str | None = None,
+                         result: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Complete an attempt.
+
+        Internal callers (sweeps, recovery) pass no credentials and rely on the
+        idempotent no-op for stale attempts. External workers (ADR-006) supply
+        `namespace` + the fencing `nonce` they received at claim time:
+          * an attempt outside the caller's namespace is a 404, never a leak;
+          * a claimed attempt completed without the live nonce is fenced (409);
+          * re-completion of a terminal attempt stays an idempotent no-op.
+        """
         snap = self.store.snapshot()
         attempt = snap.attempts.get(attempt_id)
-        if attempt is None or attempt.status != AttemptStatus.RUNNING:
-            return  # stale/revoked completion — idempotent no-op
+        if attempt is None:
+            if namespace is not None:
+                raise NotFoundError(f"attempt not found: {attempt_id}")
+            return None
         wf = snap.workflow(attempt.workflow_id)
         if wf is None:
-            return
+            if namespace is not None:
+                raise NotFoundError(f"attempt not found: {attempt_id}")
+            return None
+        if namespace is not None and wf.namespace != namespace:
+            raise NotFoundError(f"attempt not found: {attempt_id}")
+        # Fencing applies to the external path only: sweeps and recovery are
+        # internal writers that must be able to fail a claimed attempt.
+        if namespace is not None and attempt.worker_nonce is not None and nonce != attempt.worker_nonce:
+            raise ConflictError("attempt is fenced: missing or stale worker token")
+        if attempt.status != AttemptStatus.RUNNING:
+            node = wf.nodes.get(attempt.node_id)
+            return {
+                "id": attempt.id,
+                "status": attempt.status.value,
+                "idempotent": True,
+                "node_id": attempt.node_id,
+                "node_status": node.status.value if node else None,
+            }
         wf = copy.deepcopy(wf)
         node = wf.nodes.get(attempt.node_id)
         if node is None:
@@ -159,6 +191,11 @@ class WorkflowEngine:
         now = self.clock.now()
         attempt.finished_at = now
         attempt.error = error
+        if result is not None:
+            attempt.result = result
+        if worker_id:
+            attempt.worker_id = worker_id
+        attempt.deadline = None
         if wf.cancel_requested:
             target = AttemptStatus.CANCELLED
         elif timed_out:
@@ -202,6 +239,182 @@ class WorkflowEngine:
         wf.updated_at = now
         self.store.put_workflow(wf)
         self._maybe_finalize(wf.id, trace_id=trace_id)
+        return {
+            "id": attempt.id,
+            "status": attempt.status.value,
+            "idempotent": False,
+            "node_id": node.id,
+            "node_status": wf.nodes[node.id].status.value,
+            "retrying": wf.nodes[node.id].status == NodeStatus.PENDING,
+            "workflow_status": wf.status.value,
+        }
+
+    # -------------------------------------------------- external worker protocol
+
+    def attempt_view(self, attempt: Attempt, snap=None) -> dict[str, Any]:
+        """Worker-facing view of an attempt (job descriptor + lease deadline)."""
+        snap = snap or self.store.snapshot()
+        wf = snap.workflow(attempt.workflow_id)
+        node = wf.nodes.get(attempt.node_id) if wf else None
+        lease = snap.lease(attempt.lease_id) if attempt.lease_id else None
+        deadline = attempt.deadline
+        if lease is not None:
+            deadline = lease.expires_at if deadline is None else min(deadline, lease.expires_at)
+        return {
+            "id": attempt.id,
+            "workflow_id": attempt.workflow_id,
+            "workflow_name": wf.name if wf else None,
+            "node_id": attempt.node_id,
+            "node_name": node.name if node else None,
+            "attempt_no": attempt.attempt_no,
+            "status": attempt.status.value,
+            "started_at": attempt.started_at,
+            "finished_at": attempt.finished_at,
+            "error": attempt.error,
+            "lease_id": attempt.lease_id,
+            "worker_id": attempt.worker_id,
+            "claimed": attempt.worker_id is not None,
+            "claimable": attempt.claimable,
+            "deadline": deadline,
+            "result": attempt.result,
+            "trace_id": attempt.trace_id,
+        }
+
+    def attempts_view(self, *, namespace: str | None = None, state: str | None = None,
+                      claimable: bool | None = None, lease_id: str | None = None,
+                      workflow_id: str | None = None, worker_id: str | None = None,
+                      limit: int = 100) -> list[dict[str, Any]]:
+        """List attempts for pull-based workers (namespace-scoped, bounded)."""
+        snap = self.store.snapshot()
+        out: list[dict[str, Any]] = []
+        for attempt in snap.attempts.values():
+            wf = snap.workflow(attempt.workflow_id)
+            if wf is None:
+                continue
+            if namespace is not None and wf.namespace != namespace:
+                continue
+            if state is not None and attempt.status.value != state:
+                continue
+            if claimable is not None and attempt.claimable != claimable:
+                continue
+            if lease_id is not None and attempt.lease_id != lease_id:
+                continue
+            if workflow_id is not None and attempt.workflow_id != workflow_id:
+                continue
+            if worker_id is not None and attempt.worker_id != worker_id:
+                continue
+            out.append(self.attempt_view(attempt, snap))
+        out.sort(key=lambda a: (a["started_at"], a["id"]))
+        return out[: max(1, min(int(limit), 1000))]
+
+    def claim_attempt(self, attempt_id: str, *, worker_id: str, namespace: str | None = None,
+                      ttl: float | None = None, trace_id: str = "") -> dict[str, Any]:
+        """Bind a worker to a lease-bound attempt and hand out a fencing nonce.
+
+        A successful claim takes ownership of the attempt's lease slot
+        (holder = worker, fresh nonce, renewed expiry). Re-claiming your own
+        attempt rotates the nonce — a stalled copy of the worker is fenced out.
+        """
+        if not worker_id:
+            raise ValidationError("worker_id is required to claim an attempt")
+        snap = self.store.snapshot()
+        attempt = snap.attempts.get(attempt_id)
+        if attempt is None:
+            raise NotFoundError(f"attempt not found: {attempt_id}")
+        wf = snap.workflow(attempt.workflow_id)
+        if wf is None or (namespace is not None and wf.namespace != namespace):
+            raise NotFoundError(f"attempt not found: {attempt_id}")
+        if attempt.status != AttemptStatus.RUNNING:
+            raise ConflictError(f"attempt is not running (status={attempt.status.value})")
+        if attempt.lease_id is None:
+            raise ConflictError("attempt is not lease-bound; there is nothing to claim")
+        lease = snap.lease(attempt.lease_id)
+        now = self.clock.now()
+        if lease is None or lease.state.value not in ("active", "renewing") or lease.expires_at <= now:
+            raise ConflictError("lease expired or was released; attempt will be redispatched")
+        if attempt.worker_id is not None and attempt.worker_id != worker_id:
+            raise ConflictError(f"attempt already claimed by {attempt.worker_id}")
+        ttl = float(ttl) if ttl else float(self.default_lease_seconds)
+        if not (5.0 <= ttl <= 3600.0):
+            raise ValidationError("ttl must be between 5 and 3600 seconds")
+        lease = copy.deepcopy(lease)
+        lease.holder = worker_id
+        lease.nonce = new_nonce()
+        lease.expires_at = now + ttl
+        attempt = copy.deepcopy(attempt)
+        attempt.worker_id = worker_id
+        attempt.worker_nonce = lease.nonce
+        node = wf.nodes.get(attempt.node_id)
+        deadline = now + ttl
+        if node is not None and node.timeout:
+            deadline = min(deadline, attempt.started_at + node.timeout)
+        attempt.deadline = deadline
+        self.store.put_lease(lease)
+        self.store.put_attempt(attempt)
+        self.logger.log("workflow.attempt_claimed", info=True, workflow=wf.id, node=attempt.node_id,
+                        attempt=attempt.id, worker=worker_id, lease=lease.id, trace_id=trace_id)
+        self.metrics.counter("worker.claims").inc()
+        view = self.attempt_view(attempt)
+        view.update({"nonce": lease.nonce, "lease_expires_at": lease.expires_at, "deadline": deadline})
+        return view
+
+    def heartbeat_attempt(self, attempt_id: str, *, worker_id: str, nonce: str,
+                          namespace: str | None = None, ttl: float | None = None,
+                          trace_id: str = "") -> dict[str, Any]:
+        """Extend a claimed attempt's lease (liveness proof). Fenced by nonce."""
+        snap = self.store.snapshot()
+        attempt = snap.attempts.get(attempt_id)
+        if attempt is None:
+            raise NotFoundError(f"attempt not found: {attempt_id}")
+        wf = snap.workflow(attempt.workflow_id)
+        if wf is None or (namespace is not None and wf.namespace != namespace):
+            raise NotFoundError(f"attempt not found: {attempt_id}")
+        if attempt.status != AttemptStatus.RUNNING:
+            raise ConflictError(f"attempt is not running (status={attempt.status.value})")
+        if attempt.worker_id != worker_id or attempt.worker_nonce != nonce:
+            raise ConflictError("attempt is fenced: missing or stale worker token")
+        if attempt.lease_id is None:
+            raise ConflictError("attempt is not lease-bound; nothing to renew")
+        lease = snap.lease(attempt.lease_id)
+        now = self.clock.now()
+        if lease is None or lease.state.value not in ("active", "renewing") or lease.expires_at <= now:
+            raise ConflictError("lease expired or was released; attempt will be redispatched")
+        ttl = float(ttl) if ttl else float(self.default_lease_seconds)
+        if not (5.0 <= ttl <= 3600.0):
+            raise ValidationError("ttl must be between 5 and 3600 seconds")
+        lease = copy.deepcopy(lease)
+        lease.renew(nonce, lease.expires_at, now + ttl)
+        attempt = copy.deepcopy(attempt)
+        node = wf.nodes.get(attempt.node_id)
+        deadline = now + ttl
+        if node is not None and node.timeout:
+            deadline = min(deadline, attempt.started_at + node.timeout)
+        attempt.deadline = deadline
+        self.store.put_lease(lease)
+        self.store.put_attempt(attempt)
+        self.metrics.counter("worker.heartbeats").inc()
+        return {"id": attempt.id, "lease_id": lease.id, "lease_expires_at": lease.expires_at,
+                "deadline": deadline, "status": attempt.status.value}
+
+    def _sweep_expired_leases(self, now: float) -> None:
+        """Fail attempts whose lease slot is gone: no worker can complete them.
+
+        A lease-bound attempt is only completable while its slot is live. When
+        the slot expires (worker died without heartbeat), the attempt fails and
+        the node's retry policy decides what happens next — the same contract as
+        a node timeout, with a distinct error so the cause is observable.
+        """
+        snap = self.store.snapshot()
+        for attempt in list(snap.attempts.values()):
+            if attempt.status != AttemptStatus.RUNNING or attempt.lease_id is None:
+                continue
+            lease = snap.lease(attempt.lease_id)
+            live = (lease is not None and lease.state.value in ("active", "renewing")
+                    and lease.expires_at > now)
+            if live:
+                continue
+            self.attempt_complete(attempt.id, ok=False, error="lease_expired",
+                                  trace_id=attempt.trace_id)
 
     # ------------------------------------------------------------------ pump
 
@@ -217,6 +430,7 @@ class WorkflowEngine:
                 continue
             self._dispatch_ready(wf_id, now)
         self._sweep_timed_out_nodes(now)
+        self._sweep_expired_leases(now)
 
     def recover(self, now: float | None = None) -> None:
         """Boot-time reconciliation: fail orphaned attempts, resume dispatch."""

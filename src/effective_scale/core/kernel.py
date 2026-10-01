@@ -21,7 +21,7 @@ from typing import Any, Callable
 from ..adapters import MemoryStore
 from ..domain.ids import new_id, new_nonce
 from ..domain.models import Lease, Namespace, Token, Workload
-from ..domain.states import LeaseState, NodeState
+from ..domain.states import LeaseState, NodeState, transition
 from ..observability.registry import Registry
 from ..ports.logger import JsonLogger, Logger
 from ..ports.random import RandomSource, SecureRandom
@@ -57,6 +57,7 @@ class Config:
     event_partitions: int = 4
     event_max_lag: int = 1000
     event_max_attempts: int = 5
+    attempt_result_max_bytes: int = 65536
     log_level: str = "info"
 
 
@@ -123,7 +124,7 @@ class Kernel:
     def start(self) -> None:
         self.store.open()
         self.logger.log("kernel.start", info=True, store=type(self.store).__name__,
-                        holder=self.config.leader_holder, version_="0.4.0")
+                        holder=self.config.leader_holder, version_="0.5.0")
         self._write(lambda: self.bus.recover())
         self._write(lambda: self.engine.recover())
         self._write(lambda: self.leader.acquire())
@@ -230,6 +231,9 @@ class Kernel:
                     plan = self.scheduler.compute(snap, now)
                     if plan.grants or plan.releases:
                         self.write(lambda: self._apply_plan(plan, now), timeout=10)
+                    if any(l.state == LeaseState.ACTIVE and l.expires_at <= now
+                           for l in self.store.snapshot().leases.values()):
+                        self.write(lambda: self._reap_expired_leases(now), timeout=10)
                 self._mark("scheduler")
             finally:
                 self.clock.sleep(self.config.scheduler_interval)
@@ -277,6 +281,40 @@ class Kernel:
             self.store.delete_lease(lease.id)
             self._audit("system", "lease.release", lease.id, "ok", {"workload": lease.workload_id})
             self.metrics.counter("scheduler.leases.released").inc()
+
+    def _reap_expired_leases(self, now: float) -> None:
+        """Reclaim slots whose TTL passed: bounded state, honest capacity.
+
+        A lease is a slot, not an execution. When its TTL lapses (no heartbeat
+        renewed it) the slot is returned to the pool and the node/workload
+        accounting is freed. Attempts on the dead slot are failed by the
+        workflow sweeper with `lease_expired`, so retry policy still applies.
+        """
+        snap = self.store.snapshot()
+        for lease in list(snap.leases.values()):
+            if lease.state != LeaseState.ACTIVE or lease.expires_at > now:
+                continue
+            wl = snap.workload(lease.workload_id)
+            node = snap.node(lease.node_id)
+            if wl is not None:
+                wl = copy.deepcopy(wl)
+                wl.replicas = max(0, wl.replicas - 1)
+                wl.updated_at = now
+                self.store.put_workload(wl)
+            if node is not None:
+                node = copy.deepcopy(node)
+                node.used_cpu = max(0, node.used_cpu - (wl.cpu if wl else 0))
+                node.used_mem = max(0, node.used_mem - (wl.memory if wl else 0))
+                node.last_heartbeat = now
+                self.store.put_node(node)
+            lease = copy.deepcopy(lease)
+            transition("lease", lease.state, LeaseState.EXPIRED)
+            lease.state = LeaseState.EXPIRED
+            self.store.put_lease(lease)
+            self.store.delete_lease(lease.id)
+            self._audit("system", "lease.expire", lease.id, "ok",
+                        {"workload": lease.workload_id, "node": lease.node_id})
+            self.metrics.counter("scheduler.leases.expired").inc()
 
     def _scaler_loop(self) -> None:
         while not self._stop.is_set():

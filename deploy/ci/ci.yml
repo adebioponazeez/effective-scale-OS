@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernel:
+    name: kernel (unit + concurrency + chaos)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Byte-compile (no syntax errors anywhere)
+        run: python -m compileall -q src tests sovereign-agent-fabric-v20/saf
+      - name: Kernel suite
+        run: make test
+      - name: Race-style stress (5x, catches flaky interleavings)
+        run: make race
+
+  saf:
+    name: SAF subproject (execution slice)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install SAF with test extras
+        run: pip install -e "sovereign-agent-fabric-v20[test]"
+      - name: SAF suite (includes live embedded-kernel worker test)
+        working-directory: sovereign-agent-fabric-v20
+        run: python -m pytest -q
+
+  docker:
+    name: container build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t effective-scale-os:ci .
+      - name: Boot + health check
+        run: |
+          docker run -d --name es -p 18080:8080 effective-scale-os:ci \
+            --store /tmp/es.db --listen 0.0.0.0:8080 --demo
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/v1/health/ready; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/v1/status
+          docker rm -f es
+
+  # ADR-001: Go is the production target. This gate activates automatically once
+  # the port lands a go.mod (docs/10-go-porting-blueprint.md maps every module);
+  # until then it is a no-op rather than a red build for code that does not exist.
+  go-port:
+    name: Go port (activates when go.mod exists)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: echo "present=$([ -f go.mod ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        if: steps.check.outputs.present == 'yes'
+        with:
+          go-version: "1.22"
+      - name: Build + vet + test
+        if: steps.check.outputs.present == 'yes'
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./... -race

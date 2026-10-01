@@ -4,7 +4,9 @@ Base path `/v1`. JSON in/out. Auth: `Authorization: Bearer <token>` (API token) 
 `X-Admin-Token: <bootstrap>` for admin routes. Errors: `{"ok":false,"error":{"code","message"}}`;
 4xx codes are stable (`validation_error`, `unauthorized`, `forbidden`, `not_found`,
 `conflict`, `rate_limited`, `capacity_exhausted`, `illegal_state_transition`,
-`backpressure`); 5xx is always `internal_error`. `X-Trace-Id` echoes/accepts tracing.
+`backpressure`); 5xx is always `internal_error`. On the worker routes: fenced/stale worker
+token, dead lease, or double claim → `409 conflict`; unknown or foreign-namespace attempt →
+`404 not_found`; oversized `result` → `400 validation_error`. `X-Trace-Id` echoes/accepts tracing.
 
 ## Health & meta
 | Method | Path | Notes |
@@ -62,6 +64,35 @@ Node shape:
 A node execs exactly one of `exec.workload_id` (lease slot) or `exec.topic` (publish event).
 Workflow: `{"name","nodes",...,"timeout":300,"schedule":"*/15 * * * *","dead_letter":true}`.
 `scheduled` workflows are templates; each cron fire creates a fresh run.
+
+### Executor protocol (ADR-006)
+
+A worker never needs internal ids: it **discovers** claimable attempts, **claims** one (which
+binds the attempt's lease slot to `worker_id` and returns a fencing `nonce`), **heartbeats** to
+hold the lease, and **completes** with the nonce. Semantics:
+
+- `GET /attempts` only returns attempts of the caller's namespace; another namespace's attempt
+  is always `404` (ids are not capabilities).
+- Completing a **claimed** attempt without its live nonce is `409 conflict` (fenced). Re-claiming
+  as the same `worker_id` rotates the nonce, so a stalled copy of a worker is fenced out.
+- Completing an already-terminal attempt is an idempotent `200` with `"idempotent": true`.
+- A lease-bound attempt whose lease expired is failed by the kernel (`error: "lease_expired"`) and
+  the node's retry policy applies; the expired slot is reaped and re-granted by the scheduler.
+- `result` must be a JSON object ≤ 64 KiB (`config.attempt_result_max_bytes`) and is recorded on
+  the attempt (visible in `GET /attempts/{aid}` and in `GET /workflows/{wid}` under `attempts`).
+- Claim/heartbeat/completion are audited (`attempt.claim`, `attempt.complete`) with the worker id
+  as actor.
+
+```bash
+# worker loop (sketch)
+curl -s "$ES/v1/attempts?claimable=true&state=running&limit=1" -H "Authorization: Bearer $T"
+curl -s -XPOST "$ES/v1/attempts/$AID/claim" -H "Authorization: Bearer $T" \
+     -d '{"worker_id":"w1","ttl_seconds":60}'
+curl -s -XPOST "$ES/v1/attempts/$AID/heartbeat" -H "Authorization: Bearer $T" \
+     -d '{"worker_id":"w1","nonce":"…","ttl_seconds":60}'
+curl -s -XPOST "$ES/v1/attempts/$AID/complete" -H "Authorization: Bearer $T" \
+     -d '{"ok":true,"worker_id":"w1","nonce":"…","result":{"evidence_hash":"…"}}'
+```
 
 ## Events
 | Method | Path | Notes |

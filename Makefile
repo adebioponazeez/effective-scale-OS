@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PYTHON ?= python3
 PYTHONPATH := src
 
-.PHONY: test test-v race smoke run clean fmt help
+.PHONY: test test-v test-saf test-all race smoke run clean fmt help
 
 help: ## show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -12,6 +12,11 @@ test: ## run full suite (unit + integration + concurrency + chaos)
 
 test-v: ## verbose suite
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m unittest discover -s . -p 'test_*.py' -v
+
+test-saf: ## run the SAF subproject suite (needs pydantic; `pip install -e ".[test]"`)
+	cd sovereign-agent-fabric-v20 && PYTHONPATH=. $(PYTHON) -m pytest -q
+
+test-all: test test-saf ## kernel + SAF suites
 
 race: ## stress: repeat the suite 5x (catches flaky interleavings)
 	@for i in 1 2 3 4 5; do \

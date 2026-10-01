@@ -8,8 +8,8 @@ most platforms bolt together with glue code:
 | Plane | What it does here |
 |---|---|
 | **API control plane** | REST API, API-key + JWT auth, tenancy, rate limits, idempotency |
-| **Compute plane** | Workloads, schedulers (FIFO / priority / round-robin / bin-pack), auto-scaling, placement policies, cordon & drain |
-| **Workflow plane** | DAG workflows, retries with exponential backoff + jitter, timeouts, cancel, leases, cron |
+| **Compute plane** | Workloads, schedulers (FIFO / priority / round-robin / bin-pack), auto-scaling, placement policies, cordon & drain, **external worker protocol** (discover → claim → heartbeat → complete, fencing tokens) |
+| **Workflow plane** | DAG workflows, retries with exponential backoff + jitter, timeouts, cancel, leases, cron, attempt results + evidence pointers |
 | **Data/event plane** | Partitioned event bus, consumer groups, checkpoints, dead-letter queues, backpressure |
 
 It is deliberately **dependency-free at runtime** (Python 3.11 standard library only), so it is
@@ -18,7 +18,8 @@ reproducible, auditable, container-friendly and safe to vendor anywhere.
 ## Quick start
 
 ```bash
-make test          # run the full test suite (unit + concurrency + chaos)
+make test          # kernel suite: unit + concurrency + chaos (75 tests)
+make test-all      # kernel + SAF subproject suites
 make run           # start the control plane on :8080
 make smoke         # end-to-end smoke: create workload, submit workflow, consume event
 ```
@@ -42,6 +43,8 @@ See `docs/00-overview.md` for the guided tour and `docs/09-api-reference.md` for
   graceful shutdown, crash recovery from a WAL-backed store.
 - **Observability**: structured JSON logs, metrics (counters/gauges/histograms), trace IDs, audit log.
 - **Security**: token auth (HMAC-signed), scoped API keys, secret redaction, audit trail.
+- **External workers**: pull-based attempt discovery, claim with a fencing nonce, lease heartbeat,
+  namespace-scoped completion, `lease_expired` retries and expired-slot reaping (ADR-006).
 
 ## Repository layout
 
@@ -58,6 +61,9 @@ deploy/          Dockerfile, compose, Kubernetes manifests
 - Reference runtime is **single-node per store** by design (see ADR-004). The persistence port is narrow
   so a Postgres adapter is a drop-in replacement for multi-node; multi-node semantics and the
   leader-election protocol are implemented and tested in-process.
+- Worker dispatch is **pull-based** (ADR-006): the kernel never pushes work to a worker, so "no
+  worker polling" looks like slow progress until node/workflow timeouts fire — visible in
+  `/v1/attempts` and `/v1/status`.
 - This sandbox build is **Python** because the Go toolchain cannot be provisioned here (network egress
   allowlist). The design is toolchain-neutral; `docs/10-go-porting-blueprint.md` maps every module to
   idiomatic stdlib-Go, and `.github/workflows/ci.yml` includes the Go gate so a Go port is verified

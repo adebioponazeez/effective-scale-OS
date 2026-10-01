@@ -1,7 +1,8 @@
 # SAF V20 — Review vs. Architecture & Hardening Record
 
-Review date: 2026-09-02 · Scope: `sovereign-agent-fabric-v20/` as retrieved from
-the Drive source, checked against `01-final-system-architecture.md` (§1–§32),
+Review dates: 2026-09-02 (slice 1) and 2026-10-01 (slice 2, §6). Scope:
+`sovereign-agent-fabric-v20/` as retrieved from the Drive source, checked against
+`01-final-system-architecture.md` (§1–§32),
 `02-engineering-brief.md` (NFRs, risk register), `03-adapter-contracts.md`,
 `04-adr.md` (ADR-001…007) and the §30 definition of done.
 
@@ -56,13 +57,63 @@ pretend.
 | 1. saved | ✅ all source on disk; package installs |
 | 2. executable | ✅ `saf doctor / capabilities / run`; local + `--es` |
 | 3. tested | ✅ 31 tests: unit + chaos/storm + live kernel integration |
-| 4. observed | ✅ independent kernel observes the capability plan (workflow state, event nodes) |
+| 4. observed | ✅ slice 1: kernel observes the plan; **slice 2: kernel schedules, SAF worker executes and the kernel records results** |
 | 5. independently verified | ✅ save-proof + hash-chained evidence ledger, tamper tests |
 | 6. evidence recorded | ✅ ledger appends; chain verified in tests |
 | 7. policy satisfied | ✅ policy gate before ranking/execution; tests |
-| 8. rollback/recovery | ⚠️ quarantine/recovery proven for torn writes; full runtime rollback (snapshot→restore) is future work |
+| 8. rollback/recovery | ✅ slice 2: rollback points + restore (`saf/tools/backup.py`), dry-run, bounded/unrestorable reporting |
 
-## 4. Honest boundaries (unchanged, by design)
+## 6. Slice 2 review — execution, rollback, offline (2026-10-01)
+
+Scope: the gap named in §4 ("resolver output is the plan; execution is the next slice"),
+plus the kernel-side blocker ("attempt ids are internal"). Findings and disposition:
+
+| # | Finding | Evidence | Severity | Disposition |
+|---|---|---|---|---|
+| N1 | No execution: `saf run` ranked candidates and stopped | `runtime/` had no executor | High | Fixed: `saf/runtime/executor.py` implements PLAN→EXECUTE→VALIDATE→EVIDENCE→MEMORY with candidate fall-through and per-step status |
+| N2 | Every capability required a model/CLI, so deterministic work could not run offline | only `agent://*` adapters existed | High | Fixed: `saf/agents/local.py` (`saf://local`) — deterministic inspect/test/save-proof, no model, no shell, bounded |
+| N3 | Save-proof existed but was never *used* by an execution path | `verification.py` unused outside tests | High | Fixed: mutating steps get snapshot→prove→ledger verdicts (`verified=false` when a runtime claims success without changing state) |
+| N4 | "Rollback/recovery understood" was unmet (docs §30 step 8) | no snapshot/restore | High | Fixed: content-addressed rollback points + `saf rollback` (dry-run, hash-verified restore, explicit `unrestorable` reporting) |
+| N5 | Offline mode was a message, not a mechanism (§21) | `--es` unreachable → `"unavailable"` and nothing retained | Medium | Fixed: durable outbox (payload hash, dependencies, attempts, last error) + `saf sync` reconciliation reusing the kernel idempotency key |
+| N6 | The plan was recorded as independent event nodes: a worker pool could run `run tests` before `refactor` | transport built nodes without `depends_on` | High | Fixed: capabilities are chained in declared order; live test asserts execution order |
+| N7 | Kernel: an external client could not discover or safely own an attempt (attempt ids internal, completion unauthenticated by identity) | kernel API had completion but no list/claim/heartbeat | High | Fixed in the kernel (v0.5.0, ADR-006): attempts API + claim with fencing nonce + heartbeat + namespace/fence-enforced completion; SAF `saf worker` is the first client |
+| N8 | Kernel: expired leases were never reclaimed — capacity accounting leaked and local state grew | `LeaseState.EXPIRED` was unreachable | Medium | Fixed: scheduler reaps expired slots (`lease.expire` audit) and the workflow sweeper fails their attempts (`lease_expired`, retry policy applies) |
+
+### Files (slice 2)
+
+- `saf/runtime/executor.py` — lifecycle, fall-through, save-proof, evidence, memory, stats.
+- `saf/runtime/worker.py` — lease-bound kernel worker (claim → execute → heartbeat → complete).
+- `saf/runtime/stats.py` — durable per-resource reliability (reported, never secretly ranked).
+- `saf/agents/local.py` — deterministic local capability runtime.
+- `saf/tools/backup.py` — rollback points + restore.
+- `saf/transport/outbox.py` — offline outbox + `reconcile()`.
+- `saf/transport/effective_scale.py` — chained plan, worker-protocol client methods.
+- `saf/cli/main.py` — `execute`, `worker`, `sync`, `verify`, `ledger`, `rollback`, `resources`.
+- tests: `test_executor.py`, `test_rollback.py`, `test_outbox.py`, `test_worker.py`, live
+  `test_live_worker_executes_a_capability_workflow`.
+
+### Verification (slice 2)
+
+- SAF suite: **64 tests** green (`test_executor` 11, `test_rollback` 7, `test_outbox` 5,
+  `test_worker` 10, plus the original 31) including a **live kernel** run where the worker
+  executed a two-capability workflow to `succeeded` over the public HTTP API.
+- Kernel suite (this repo): **75 tests** green, including `tests/test_workers.py`
+  (claim/fence/namespace/expiry/reap, engine + HTTP level) and a live claim/heartbeat/complete loop.
+- Rollback proven on modified, created and oversized files, including dry-run and a
+  corrupted-object guard.
+
+### Honest boundaries (slice 2)
+
+- One capability per attempt; retries belong to the kernel.
+- Rollback covers tracked files only — no external side effects (deploys, API calls, purchases).
+- `saf://local` does not write code: that still needs an installed agent CLI, and absence is
+  reported as `unavailable`.
+- Observed resource stats are advisory; deterministic resolution is unchanged (§9).
+
+## 4. Honest boundaries at slice 1 (historical — see §6 for what moved)
+
+These were true when slice 1 shipped; §6 records which of them the execution slice closed and
+which are still open. Kept verbatim as the audit trail of what was *known* missing.
 
 - The slice does **not** execute a real `pi/cursor/codex/opencode/aider` run
   end-to-end; adapters are contract-complete and bounded, but no CLI is assumed
@@ -81,10 +132,18 @@ pretend.
 ```bash
 cd sovereign-agent-fabric-v20
 pip install -e ".[test]"
-pytest -q                      # 31 passed (includes live embedded-kernel test)
+pytest -q                      # 64 passed (includes two live embedded-kernel tests)
 
-# integrate with a running effective-scale-OS:
+# execute locally (deterministic capabilities need no model or CLI):
+saf execute "inspect repository and run tests" --workspace . --state-dir .saf
+saf verify --state-dir .saf
+saf rollback latest --workspace . --dry-run
+
+# or run the real loop: kernel schedules, SAF worker executes
 PYTHONPATH=../src python3 -m effective_scale --store /tmp/es.db \
-    --listen 127.0.0.1:8080 --admin-token dev &
+    --listen 127.0.0.1:8080 --admin-token dev --demo &
+TOKEN=$(curl -fsS -XPOST http://127.0.0.1:8080/v1/tokens -H 'X-Admin-Token: dev' \
+    -d '{"namespace":"default","scopes":["read","write"]}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
 saf run --es http://127.0.0.1:8080 --token "$TOKEN" "refactor repository and run tests"
+saf worker --es http://127.0.0.1:8080 --token "$TOKEN" --workspace . --max-jobs 4
 ```
