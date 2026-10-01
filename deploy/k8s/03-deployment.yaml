@@ -15,9 +15,11 @@ spec:
       labels:
         app: effective-scale
     spec:
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30   # SIGTERM -> graceful drain (server + kernel stop)
       containers:
         - name: kernel
-          image: effective-scale-os:0.4.0
+          image: effective-scale-os:0.5.0
           imagePullPolicy: IfNotPresent
           args:
             - "--store"
@@ -36,6 +38,10 @@ spec:
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: "1", memory: 512Mi }
+          startupProbe:
+            httpGet: { path: /v1/health/live, port: http }
+            periodSeconds: 2
+            failureThreshold: 30        # x2s: a cold start may run migrations
           readinessProbe:
             httpGet: { path: /v1/health/ready, port: http }
             initialDelaySeconds: 2

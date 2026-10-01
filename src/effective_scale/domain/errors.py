@@ -41,6 +41,17 @@ class CapacityError(DomainError):
     http_status = 507
 
 
+class Overloaded(DomainError):
+    """The writer is unhealthy or its backlog is full: shed load instead of buffering it.
+
+    Deliberately NOT counted as a dependency failure by the circuit breaker — this is the
+    breaker's own output, not a new symptom.
+    """
+
+    code = "overloaded"
+    http_status = 503
+
+
 class RateLimited(DomainError):
     code = "rate_limited"
     http_status = 429

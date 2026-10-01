@@ -18,15 +18,19 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .. import __version__
 from ..adapters import MemoryStore
+from ..domain.errors import DomainError, Overloaded
 from ..domain.ids import new_id, new_nonce
 from ..domain.models import Lease, Namespace, Token, Workload
-from ..domain.states import LeaseState, NodeState
+from ..domain.states import LeaseState, NodeState, transition
 from ..observability.registry import Registry
 from ..ports.logger import JsonLogger, Logger
+from ..ports.clock import SystemClock
 from ..ports.random import RandomSource, SecureRandom
 from ..ports.store import Snapshot, Store
 from .cron import CronSchedule
+from .resilience import Bulkhead, CircuitBreaker
 from .events import ConsumerGroup, EventBus
 from .leader import LeaderElection, SingleLeader
 from .scaler import TargetScaler
@@ -53,10 +57,14 @@ class Config:
     leader_holder: str = "kernel-1"
     max_api_conns: int = 256
     max_workflow_pool: int = 64
+    max_writer_backlog: int = 1024          # bulkhead: pending client writes before 503
+    breaker_failure_threshold: int = 5      # consecutive infra failures before the breaker opens
+    breaker_open_seconds: float = 5.0       # how long it stays open before a half-open probe
     rate_limit_per_minute: int = 6000
     event_partitions: int = 4
     event_max_lag: int = 1000
     event_max_attempts: int = 5
+    attempt_result_max_bytes: int = 65536
     log_level: str = "info"
 
 
@@ -69,7 +77,7 @@ class Kernel:
             # ephemeral dev default: surface loudly but keep the API usable
             self.config.auth_secret = "dev-insecure-secret-change-me!"
         self.store = store or MemoryStore()
-        self.clock = clock or _SysClock()
+        self.clock = clock or SystemClock()
         self.rng = rng or SecureRandom()
         self.logger = logger or JsonLogger(level=self.config.log_level)
         self.metrics = metrics or Registry()
@@ -94,6 +102,14 @@ class Kernel:
                 heartbeat=self.config.heartbeat_interval, clock=self.clock, logger=self.logger,
                 on_progress=lambda: self._mark("leader"),
             )
+        # Isolation for the client-facing write path: an unbounded queue plus a wedged store is
+        # how cascading failure looks (threads parked on futures, memory growing). The bulkhead
+        # bounds the backlog; the breaker fails fast once the writer is demonstrably unhealthy.
+        # Loops and health probes bypass both on purpose — they are the recovery path.
+        self.writer_breaker = CircuitBreaker(
+            "writer", failure_threshold=self.config.breaker_failure_threshold,
+            open_seconds=self.config.breaker_open_seconds, clock=self.clock)
+        self.write_bulkhead = Bulkhead("writer-queue", self.config.max_writer_backlog)
         self._wq: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._writer_local = threading.local()
@@ -117,13 +133,16 @@ class Kernel:
 
         for name in ("api", "scheduler", "scaler", "workflow", "events", "cron", "leader", "watchdog"):
             self.metrics.gauge(f"loop.{name}.last_ts", f"last progress of {name} loop")
+        self.metrics.gauge("writer.pending", "client writes waiting on the single writer")
+        self.metrics.gauge("writer.queued", "queued writer tasks")
+        self.metrics.gauge("writer.breaker_open", "1 while the writer circuit breaker is open")
 
     # ------------------------------------------------------------------ lifecycle
 
     def start(self) -> None:
         self.store.open()
         self.logger.log("kernel.start", info=True, store=type(self.store).__name__,
-                        holder=self.config.leader_holder, version_="0.4.0")
+                        holder=self.config.leader_holder, version_=__version__)
         self._write(lambda: self.bus.recover())
         self._write(lambda: self.engine.recover())
         self._write(lambda: self.leader.acquire())
@@ -143,6 +162,22 @@ class Kernel:
             # SingleLeader is by definition always-leader: no loop to monitor.
             self._last_progress.pop("leader", None)
 
+    def ready(self, timeout: float = 2.0) -> bool:
+        """Ready = loops alive, the writer queue drains, and the store answers on the
+        kernel's own connection. Deliberately end-to-end: it is what the k8s readiness
+        probe asserts, and it cannot be satisfied by a cached snapshot."""
+        if not self.running():
+            return False
+        try:
+            return bool(self.write(lambda: self.store.ping(), timeout=timeout,
+                                   guarded=False))
+        except Exception:  # noqa: BLE001 — a wedged writer or dead store is "not ready"
+            return False
+
+    def running(self) -> bool:
+        """True while every started loop thread is alive (backing /v1/health/live)."""
+        return bool(self._threads) and all(t.is_alive() for t in self._threads)
+
     def stop(self) -> None:
         self.logger.log("kernel.shutdown_begin", info=True)
         self._stop.set()
@@ -161,18 +196,48 @@ class Kernel:
 
     # ------------------------------------------------------------------ write path
 
-    def write(self, fn: Callable[[], Any], timeout: float = 10.0) -> Any:
+    def write(self, fn: Callable[[], Any], timeout: float = 10.0, *,
+              guarded: bool = True) -> Any:
         """Serialize a mutation through the single writer. Used by API handlers.
 
         Reentrant-safe: if we are already the writer thread (a handler wrapped its
         own write() call), run directly — otherwise submitting to our own queue
         would deadlock.
+
+        `guarded=True` (client-driven writes) applies the bulkhead and circuit breaker so a
+        degraded writer sheds load with a fast 503 instead of buffering requests without
+        limit. Loops and readiness probes pass `guarded=False`: they must always attempt,
+        because they are what detects and repairs a degraded writer.
         """
         if getattr(self._writer_local, "active", False):
             return fn()
-        future: Future = Future()
-        self._wq.put((fn, future))
-        return future.result(timeout=timeout)
+        acquired = False
+        if guarded:
+            if not self.writer_breaker.allow():
+                raise Overloaded("writer circuit is open; retry shortly")
+            acquired = self.write_bulkhead.try_acquire()
+            if not acquired:
+                raise Overloaded("writer backlog is full; retry shortly")
+        try:
+            future: Future = Future()
+            self._wq.put((fn, future))
+            result = future.result(timeout=timeout)
+        except Overloaded:
+            raise
+        except DomainError:
+            # a business rejection (conflict, validation) is not a dependency failure
+            raise
+        except Exception:
+            if guarded:
+                self.writer_breaker.record_failure()
+            raise
+        else:
+            if guarded:
+                self.writer_breaker.record_success()
+            return result
+        finally:
+            if acquired:
+                self.write_bulkhead.release()
 
     def _writer_loop(self) -> None:
         self._writer_local.active = True
@@ -192,6 +257,10 @@ class Kernel:
                 self.logger.log("kernel.write_error", error=True, error_msg=str(exc))
             finally:
                 self._wq.task_done()
+                self.metrics.gauge("writer.pending").set(self.write_bulkhead.in_use)
+                self.metrics.gauge("writer.queued").set(self._wq.qsize())
+                self.metrics.gauge("writer.breaker_open").set(
+                    1 if self.writer_breaker.state() != "closed" else 0)
                 self._mark("writer")
         self._mark("writer")
 
@@ -229,7 +298,10 @@ class Kernel:
                     snap = self.store.snapshot()
                     plan = self.scheduler.compute(snap, now)
                     if plan.grants or plan.releases:
-                        self.write(lambda: self._apply_plan(plan, now), timeout=10)
+                        self.write(lambda: self._apply_plan(plan, now), timeout=10, guarded=False)
+                    if any(l.state == LeaseState.ACTIVE and l.expires_at <= now
+                           for l in self.store.snapshot().leases.values()):
+                        self.write(lambda: self._reap_expired_leases(now), timeout=10, guarded=False)
                 self._mark("scheduler")
             finally:
                 self.clock.sleep(self.config.scheduler_interval)
@@ -278,6 +350,40 @@ class Kernel:
             self._audit("system", "lease.release", lease.id, "ok", {"workload": lease.workload_id})
             self.metrics.counter("scheduler.leases.released").inc()
 
+    def _reap_expired_leases(self, now: float) -> None:
+        """Reclaim slots whose TTL passed: bounded state, honest capacity.
+
+        A lease is a slot, not an execution. When its TTL lapses (no heartbeat
+        renewed it) the slot is returned to the pool and the node/workload
+        accounting is freed. Attempts on the dead slot are failed by the
+        workflow sweeper with `lease_expired`, so retry policy still applies.
+        """
+        snap = self.store.snapshot()
+        for lease in list(snap.leases.values()):
+            if lease.state != LeaseState.ACTIVE or lease.expires_at > now:
+                continue
+            wl = snap.workload(lease.workload_id)
+            node = snap.node(lease.node_id)
+            if wl is not None:
+                wl = copy.deepcopy(wl)
+                wl.replicas = max(0, wl.replicas - 1)
+                wl.updated_at = now
+                self.store.put_workload(wl)
+            if node is not None:
+                node = copy.deepcopy(node)
+                node.used_cpu = max(0, node.used_cpu - (wl.cpu if wl else 0))
+                node.used_mem = max(0, node.used_mem - (wl.memory if wl else 0))
+                node.last_heartbeat = now
+                self.store.put_node(node)
+            lease = copy.deepcopy(lease)
+            transition("lease", lease.state, LeaseState.EXPIRED)
+            lease.state = LeaseState.EXPIRED
+            self.store.put_lease(lease)
+            self.store.delete_lease(lease.id)
+            self._audit("system", "lease.expire", lease.id, "ok",
+                        {"workload": lease.workload_id, "node": lease.node_id})
+            self.metrics.counter("scheduler.leases.expired").inc()
+
     def _scaler_loop(self) -> None:
         while not self._stop.is_set():
             try:
@@ -290,7 +396,7 @@ class Kernel:
                         before = wl.desired_replicas
                         desired = self.scaler.decide(wl, measured, now)
                         if desired is not None and desired != before:
-                            self.write(lambda: self._apply_scale(wl.id, desired, now), timeout=10)
+                            self.write(lambda: self._apply_scale(wl.id, desired, now), timeout=10, guarded=False)
                             self.scaler.record(wl.id, now, desired, before)
                 self._mark("scaler")
             finally:
@@ -321,7 +427,7 @@ class Kernel:
             try:
                 now = self.clock.now()
                 if self.leader.is_leader():
-                    self.write(lambda: self.engine.tick(now), timeout=10)
+                    self.write(lambda: self.engine.tick(now), timeout=10, guarded=False)
                 self._mark("workflow")
             finally:
                 self.clock.sleep(self.config.workflow_interval)
@@ -358,7 +464,7 @@ class Kernel:
                             if now - last < 60.0:
                                 self._cron_gates[wf.id] = nxt + 60.0
                                 continue
-                            self.write(lambda: self._fire_cron(wf.id, now), timeout=10)
+                            self.write(lambda: self._fire_cron(wf.id, now), timeout=10, guarded=False)
                             self._cron_gates[wf.id] = sched.next_after(_from_ts(now + 1)).timestamp()
                 self._mark("cron")
             finally:
@@ -455,18 +561,6 @@ class Kernel:
     def consume_now(self, topic: str, group: str, handler: Callable[[dict[str, Any]], None],
                     *, consumer: str = "default") -> int:
         return ConsumerGroup(self.bus, topic, group, handler, consumer=consumer).pump_once()
-
-
-class _SysClock:
-    def now(self) -> float:
-        return time.time()
-
-    def monotonic(self) -> float:
-        return time.monotonic()
-
-    def sleep(self, seconds: float) -> None:
-        time.sleep(max(0.0, seconds))
-
 
 def _from_ts(ts: float):
     import datetime as dt

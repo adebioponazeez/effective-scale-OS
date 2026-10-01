@@ -374,6 +374,13 @@ class Attempt:
     finished_at: float | None
     error: str | None
     trace_id: str
+    # External-worker protocol (ADR-006): a worker *claims* a lease-bound attempt
+    # and receives a fencing `worker_nonce`; only that nonce may heartbeat or
+    # complete the attempt. `deadline` is the worker-visible lease deadline.
+    worker_id: str | None = None
+    worker_nonce: str | None = None
+    deadline: float | None = None
+    result: dict[str, Any] | None = None
 
     @classmethod
     def start(cls, workflow_id: str, node_id: str, attempt_no: int, lease_id: str | None,
@@ -390,6 +397,12 @@ class Attempt:
             error=None,
             trace_id=trace_id,
         )
+
+    @property
+    def claimable(self) -> bool:
+        """Lease-bound, running, unclaimed: a pull-based worker may take it."""
+        return self.status == AttemptStatus.RUNNING and self.lease_id is not None \
+            and self.worker_id is None
 
 
 # --------------------------------------------------------------------------

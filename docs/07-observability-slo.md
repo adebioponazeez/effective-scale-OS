@@ -26,9 +26,12 @@ Canonical events (alert-worthy in bold):
 | `events.published/delivered/deadletter` | counters | bus throughput/poison rate |
 | `eventbus.pending` | gauge | current lag (backpressure watch) |
 | `metric.<wl>.<name>` | gauge | worker-reported metrics (scaler inputs) |
+| `writer.pending` / `writer.queued` | gauge | client writes waiting on the single writer, and queued tasks |
+| `writer.breaker_open` | gauge | 1 while the write path is shedding load (`503 overloaded`) |
 
-`/v1/status` exposes leader, write count, per-plane resource counts and loop errors — the
-"is the kernel healthy" single pane.
+`/v1/status` exposes leader, write count, per-plane resource counts, loop errors and the writer
+isolation block (`breaker`, `pending`, `backlog_limit`, `queued`) — the "is the kernel healthy"
+single pane. `writer.breaker = open` is the operator's signal that clients are being shed at 503.
 
 ## 3. Health
 

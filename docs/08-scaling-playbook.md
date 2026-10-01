@@ -32,6 +32,20 @@ Surfaces already exist:
   coupling; run it against the same store **reads** while publishes go through the leader.
 - Scheduler/scaler stay on the leader (they are cheap, deterministic).
 
+#### Worker fleets (the actual compute scaling lever)
+
+Workers are **pull-based and stateless** (ADR-006): each one polls
+`GET /v1/attempts?claimable=true`, claims a lease-bound attempt, heartbeats, and completes it.
+Consequences for scaling:
+
+- add workers = add replicas; no kernel change, no rebalancing protocol, no worker registry;
+- the claim is the load balancer: whichever worker polls first owns the attempt, and the lease
+  TTL bounds how long a dead worker's slot is held;
+- scale-down is safe: stop a worker and its in-flight attempt is either finished before the
+  lease lapses or re-dispatched by retry policy (`lease_expired`);
+- capacity is bounded by workload replicas (slots), not by worker count — adding workers past
+  the slot count only increases poll traffic, which is why polling intervals are configurable.
+
 ### Stage 3 — Store HA (ADR-002/004 trigger: downtime needs, files > 10 GB)
 - Swap `SQLiteStore` → `PostgresStore` (same 12-method port; the SQL is already table-shaped).
 - Leadership: Postgres advisory lock or the lease row (already in `meta`).
@@ -62,3 +76,34 @@ Surfaces already exist:
 - Writes: single writer, ~5–20 µs/op in WAL; bursts queue (observable via `writes` counter).
 - Workflow dispatch scan: O(nodes) per tick — batch large DAGs (`max_concurrency` bounds
   dispatch width; 1k-node DAGs measured OK at 500 ms tick).
+
+## 6. Operating it (supervision is part of the scaling story)
+
+Scaling a fleet you cannot keep alive is decoration. The kernel is single-writer and
+WAL-backed: `tests/test_chaos.py` proves an abrupt close replays without double-commit, and
+`tests/test_soak.py` proves sustained load keeps every loop alive with bounded state and no
+duplicate attempts after an abrupt restart. So the operating policy is **restart, do not
+nurse** — and every supervisor we ship does exactly that (enforced by the `C-ops` audit check):
+
+| Runtime | Artifact | Policy |
+|---|---|---|
+| Linux | `deploy/systemd/effective-scale.service` | `Restart=always`, `RestartSec=2`, 35s SIGTERM drain, hardening, `ReadWritePaths=/var/lib/effective-scale` |
+| Windows | `deploy/windows/install-service.ps1` | SCM automatic start + `sc.exe failure` restart-2s/2s/5s |
+| Kubernetes | `deploy/k8s/03-deployment.yaml` | `startupProbe` (live), `readinessProbe` (ready), `livenessProbe` (live), 30s grace, `replicas: 1` |
+| Compose | `docker-compose.yml` | healthcheck on `/v1/health/ready`, `restart: unless-stopped` |
+| Image | `Dockerfile` | `HEALTHCHECK` against `/v1/health/ready` |
+
+Probe semantics matter when a probe drives traffic:
+
+- `GET /v1/health/live` — liveness: the process is up and its loops are alive; it never touches
+  the store, so a recoverable store failure does not get the process killed.
+- `GET /v1/health/ready` — readiness: the kernel can *commit* — it asks the writer thread to run
+  the store's own probe (`SELECT 1` on the kernel's connection). A dead store or a wedged writer
+  returns 503 while `live` stays 200. Asserted in `tests/test_cli.py::HealthSemanticsTest`.
+
+Before you scale out, run the longevity check on your own hardware:
+
+```bash
+make soak     # sustained load: terminal workflows, bounded attempts/leases, no loop errors
+make audit    # every deployment artifact still declares probes + a restart policy (C-ops)
+```

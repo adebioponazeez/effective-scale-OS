@@ -1,9 +1,10 @@
 [project]
 name = "sovereign-agent-fabric"
-version = "0.1.0"
+version = "0.2.0"
 description = "Capability-first agentic execution fabric for PCOS/V20"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.8", "PyYAML>=6.0"]
+dependencies = ["pydantic>=2.8"]  # PyYAML removed: config/*.yaml are dormant exemplars,
+                                    # nothing imports yaml (see ontology dormant inventory)
 
 [project.scripts]
 saf = "saf.cli.main:main"

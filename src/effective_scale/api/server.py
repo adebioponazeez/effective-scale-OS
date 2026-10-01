@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
+from .. import __version__
 from ..core.kernel import Kernel
 from ..domain.errors import DomainError, Forbidden, RateLimited, Unauthorized
 from ..domain.models import to_jsonable
@@ -180,6 +181,11 @@ class ApiServer:
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
+    @property
+    def port(self) -> int | None:
+        """The bound TCP port (useful when the configured port is 0)."""
+        return self._httpd.server_address[1] if self._httpd else None
+
     def route(self, methods: str, pattern: str, fn: Callable, *, public: bool = False,
               scope: str = "read", admin: bool = False) -> None:
         import re
@@ -188,14 +194,28 @@ class ApiServer:
         self.routes.append((methods.split(","), {"regex": compiled, "fn": fn,
                                                  "public": public, "scope": scope, "admin": admin}))
 
+    def _live(self, h, p, q, t):
+        """Liveness: the process is up and its loops are alive. Never touches the store."""
+        live = self.kernel.running()
+        return 200 if live else 503, {"ok": live, "live": live}, {}
+
+    def _ready(self, h, p, q, t):
+        """Readiness: the kernel can actually commit. A dead store or a wedged writer
+        must report not-ready, never a stack trace."""
+        try:
+            ready = self.kernel.ready()
+        except Exception:  # noqa: BLE001 — a probe must never raise
+            ready = False
+        if not ready:
+            return 503, {"ok": False, "ready": False, "error": "kernel_not_ready"}, {}
+        return 200, {"ok": True, "ready": True}, {}
+
     def _registered(self) -> None:
         k = self.kernel
         r = self.route
 
-        r("GET", "/v1/health/live", lambda h, p, q, t: (200, {"ok": True, "live": True}, {}), public=True)
-        r("GET", "/v1/health/ready", lambda h, p, q, t: (
-            200 if k.store.get_meta("schema_version") is not None else 503,
-            {"ok": True, "ready": True}, {}), public=True)
+        r("GET", "/v1/health/live", self._live, public=True)
+        r("GET", "/v1/health/ready", self._ready, public=True)
         r("GET", "/v1/status", self._status, public=True)
         r("GET", "/v1/metrics", self._metrics, public=True)
 
@@ -223,6 +243,11 @@ class ApiServer:
         r("GET", "/v1/workflows/{wid}", self._get_workflow, scope="read")
         r("POST", "/v1/workflows/{wid}/cancel", self._cancel_workflow, scope="write")
         r("POST", "/v1/workflows/{wid}/retry-node/{nid}", self._retry_node, scope="write")
+        # External worker protocol (ADR-006): discover -> claim -> heartbeat -> complete.
+        r("GET", "/v1/attempts", self._list_attempts, scope="read")
+        r("GET", "/v1/attempts/{aid}", self._get_attempt, scope="read")
+        r("POST", "/v1/attempts/{aid}/claim", self._claim_attempt, scope="write")
+        r("POST", "/v1/attempts/{aid}/heartbeat", self._heartbeat_attempt, scope="write")
         r("POST", "/v1/attempts/{aid}/complete", self._complete_attempt, scope="write")
         r("GET", "/v1/leases", self._list_leases, scope="read")
 
@@ -239,7 +264,7 @@ class ApiServer:
     def _status(self, h, p, q, t):
         kv = self.kernel
         return (200, {
-            "version": "0.4.0", "leader": kv.leader.is_leader(),
+            "version": __version__, "leader": kv.leader.is_leader(),
             "holder": kv.config.leader_holder, "store": type(kv.store).__name__,
             "writes": kv.store.write_count(),
             "workflows": len(kv.store.snapshot().workflows),
@@ -247,6 +272,12 @@ class ApiServer:
             "nodes": len(kv.store.snapshot().nodes),
             "leases": len(kv.store.snapshot().leases),
             "loop_errors": kv._loop_errors,
+            "writer": {
+                "breaker": kv.writer_breaker.state(),
+                "pending": kv.write_bulkhead.in_use,
+                "backlog_limit": kv.config.max_writer_backlog,
+                "queued": kv._wq.qsize(),
+            },
         }, {"Cache-Control": "no-store"})
 
     def _metrics(self, h, p, q, t):
@@ -420,12 +451,91 @@ class ApiServer:
         wf = self._require_workflow(p["wid"], claims.namespace)
         return (200, {"workflow": self._wf_json(wf)}, {})
 
+    def _list_attempts(self, h, p, q, t):
+        claims = self._auth_for(h)
+        claimable = q.get("claimable")
+        claimable_flag = None if claimable is None else str(claimable).lower() in ("1", "true", "yes")
+        try:
+            limit = int(q.get("limit", 100))
+        except (TypeError, ValueError):
+            limit = 100
+        items = self.kernel.engine.attempts_view(
+            namespace=claims.namespace, state=q.get("state") or q.get("status"),
+            claimable=claimable_flag, lease_id=q.get("lease_id"),
+            workflow_id=q.get("workflow_id"), worker_id=q.get("worker_id"), limit=limit)
+        return (200, {"attempts": items, "count": len(items)}, {})
+
+    def _get_attempt(self, h, p, q, t):
+        claims = self._auth_for(h)
+        wf = None
+        snap = self.kernel.store.snapshot()
+        attempt = snap.attempts.get(p["aid"])
+        if attempt is not None:
+            wf = snap.workflow(attempt.workflow_id)
+        if attempt is None or wf is None or wf.namespace != claims.namespace:
+            from ..domain.errors import NotFoundError
+            raise NotFoundError(f"attempt not found: {p['aid']}")
+        return (200, {"attempt": self.kernel.engine.attempt_view(attempt, snap)}, {})
+
+    def _claim_attempt(self, h, p, q, t):
+        claims = self._auth_for(h, scope="write")
+        body = h._body()
+        worker_id = str(body.get("worker_id") or "").strip()
+        ttl = body.get("ttl_seconds")
+
+        def op():
+            # claim + audit in the same write: single-writer discipline (ADR-005)
+            view = self.kernel.engine.claim_attempt(
+                p["aid"], worker_id=worker_id, namespace=claims.namespace,
+                ttl=float(ttl) if ttl else None, trace_id=t)
+            self.kernel._audit(worker_id, "attempt.claim", p["aid"], "ok",
+                               {"lease": view.get("lease_id"),
+                                "workflow": view.get("workflow_id")}, t)
+            return view
+
+        view = self.kernel.write(op)
+        return (200, {"attempt": view, "nonce": view["nonce"],
+                      "lease_id": view["lease_id"], "deadline": view["deadline"]}, {})
+
+    def _heartbeat_attempt(self, h, p, q, t):
+        claims = self._auth_for(h, scope="write")
+        body = h._body()
+        ttl = body.get("ttl_seconds")
+        out = self.kernel.write(lambda: self.kernel.engine.heartbeat_attempt(
+            p["aid"], worker_id=str(body.get("worker_id") or ""), nonce=str(body.get("nonce") or ""),
+            namespace=claims.namespace, ttl=float(ttl) if ttl else None, trace_id=t))
+        return (200, {"ok": True, **out}, {})
+
     def _complete_attempt(self, h, p, q, t):
         claims = self._auth_for(h, scope="write")
         body = h._body()
-        self.kernel.write(lambda: self.kernel.engine.attempt_complete(
-            p["aid"], ok=bool(body.get("ok", True)), error=body.get("error"), trace_id=t))
-        return (200, {"ok": True}, {})
+        result = body.get("result")
+        if result is not None:
+            from ..domain.errors import ValidationError as _V
+            if not isinstance(result, dict):
+                raise _V("result must be a JSON object")
+            encoded = json.dumps(result, default=str)
+            if len(encoded.encode()) > self.kernel.config.attempt_result_max_bytes:
+                raise _V(f"result exceeds {self.kernel.config.attempt_result_max_bytes} bytes")
+        actor = str(body.get("worker_id") or claims.token_id)
+
+        def op():
+            out = self.kernel.engine.attempt_complete(
+                p["aid"], ok=bool(body.get("ok", True)), error=body.get("error"),
+                trace_id=t, namespace=claims.namespace,
+                worker_id=str(body.get("worker_id") or "") or None,
+                nonce=body.get("nonce"), result=result)
+            if out and not out.get("idempotent"):
+                self.kernel._audit(actor, "attempt.complete", p["aid"], "ok",
+                                   {"workflow": out.get("workflow_id"),
+                                    "node": out.get("node_id"),
+                                    "status": out.get("status"),
+                                    "ok": bool(body.get("ok", True))}, t)
+                self.kernel.metrics.counter("worker.completions").inc()
+            return out
+
+        out = self.kernel.write(op)
+        return (200, {"ok": True, **(out or {})}, {})
 
     def _list_leases(self, h, p, q, t):
         claims = self._auth_for(h)
@@ -497,13 +607,17 @@ class ApiServer:
         node = self.kernel.store.snapshot().node(nid)
         return copy.deepcopy(node) if node else None
 
-    @staticmethod
-    def _wf_json(wf) -> dict:
+    def _wf_json(self, wf) -> dict:
         from ..domain.models import to_jsonable
 
+        snap = self.kernel.store.snapshot()
+        attempts = [self.kernel.engine.attempt_view(a, snap)
+                    for a in snap.attempts.values() if a.workflow_id == wf.id]
+        attempts.sort(key=lambda a: (a["node_id"], a["attempt_no"]))
         return {
             **to_jsonable(wf),
             "nodes": [to_jsonable(n) for n in wf.nodes.values()],
+            "attempts": attempts,
         }
 
     def _idempotent(self, h, trace_id: str, body: dict, fn: Callable,

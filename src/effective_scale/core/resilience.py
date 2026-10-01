@@ -1,10 +1,14 @@
-"""Resilience primitives: circuit breaker, bulkhead, retry policy, backoff."""
+"""Resilience primitives: circuit breaker and bulkhead.
+
+The workflow engine owns its own retry/backoff (`core/workflow.py::_backoff`) because
+backoff is a per-node property there. This kit holds only the two guards the writer
+path uses: a breaker that opens on repeated infra failure and a bulkhead that bounds
+concurrent writers.
+"""
 from __future__ import annotations
 
-import random
 import threading
 import time
-from typing import Any, Callable
 
 
 class CircuitBreaker:
@@ -37,11 +41,9 @@ class CircuitBreaker:
         now = self._clock.monotonic() if hasattr(self._clock, "monotonic") else time.monotonic()
         with self._lock:
             if self._state == "closed":
+                # `record_failure` opens the breaker the moment the threshold is
+                # reached, so closed here always means "still under threshold".
                 self._prune(now)
-                if len(self._failures) >= self._threshold:
-                    self._state = "open"
-                    self._opened_at = now
-                    return False
                 return True
             if self._state == "open":
                 if now - self._opened_at >= self._open_seconds:
@@ -108,27 +110,3 @@ class Bulkhead:
     def in_use(self) -> int:
         with self._lock:
             return self._in_use
-
-
-def backoff_delay(attempt: int, base: float, cap: float, jitter: float = 0.2) -> float:
-    """Exponential backoff with bounded jitter: base * 2^(attempt-1), capped."""
-    delay = min(cap, base * (2 ** max(0, attempt - 1)))
-    j = delay * jitter * (random.random() * 2 - 1)
-    return max(0.0, delay + j)
-
-
-def retry(fn: Callable[[], Any], *, attempts: int = 3, base: float = 0.1, cap: float = 1.0,
-          jitter: float = 0.2, on_error: Callable[[Exception], bool] | None = None) -> Any:
-    """Synchronous retry with backoff. Returns first success; raises last error."""
-    last: Exception | None = None
-    for i in range(1, attempts + 1):
-        try:
-            return fn()
-        except Exception as exc:  # noqa: BLE001 — deliberate retry boundary
-            last = exc
-            if on_error and not on_error(exc):
-                raise
-            if i < attempts:
-                time.sleep(backoff_delay(i, base, cap, jitter))
-    assert last is not None
-    raise last

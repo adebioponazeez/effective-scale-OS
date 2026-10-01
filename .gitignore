@@ -23,3 +23,9 @@ build/
 .idea/
 .vscode/
 .DS_Store
+
+# CI definition is tracked at deploy/ci/ci.yml: the push token is a GitHub App
+# without the `workflows` permission, so committing into .github/workflows/ is
+# rejected by GitHub. Activate with `git add -f .github/workflows/ci.yml`
+# (see deploy/ci/README.md) from a token that has the scope.
+.github/workflows/ci.yml

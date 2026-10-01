@@ -15,6 +15,10 @@ The checklist a production reviewer actually reads. Every row is either implemen
 | E6 | Workflow completes twice (fan-in races) | `succeeded_once` flag on workflow; downstream dispatch is idempotent by node id |
 | E7 | Memory blow-up from slow consumers | bounded buffers + `425/429` backpressure + max_lag reject |
 | E8 | Secret leakage in logs/API | redaction at the logger boundary; tokens stored hashed |
+| E9 | Two workers complete the same attempt | claim issues a fencing nonce; completion without the live nonce is `409`; re-claim rotates the token |
+| E10 | Worker writes a result for another tenant's attempt | attempt routes are namespace-scoped by the caller's token; foreign ids are `404`, never `403` (no existence leak) |
+| E11 | Worker sends a 10 MB "result" | bounded at 64 KiB (`validation_error`) and recorded as JSON only |
+| E12 | Writer wedged or store dead: client writes pile up (unbounded queue, parked threads, timeout storm) | client-facing writes are guarded by a **bulkhead** (`max_writer_backlog`, default 1024) and a **circuit breaker** (`breaker_failure_threshold`, default 5): shedding returns `503 overloaded` with `Retry-After` instead of buffering. Loops and the readiness probe bypass both — they are the recovery path. Observable in `/v1/status.writer` and `writer.*` gauges |
 
 ## 2. Timing & clock edge cases
 
@@ -26,6 +30,8 @@ The checklist a production reviewer actually reads. Every row is either implemen
 | T4 | Cron fires while previous run still active | `concurrency=1` default → skipped + `cron.skipped` event |
 | T5 | Timeout fires exactly as task completes | timeout and success race → `TIMED_OUT` wins if deadline passed before ack; audit both |
 | T6 | Distributed `now` skew across nodes | single-writer clock; cross-node only TTL math (drift-tolerant) |
+| T7 | Heartbeat races lease expiry | renewal is a single-writer compare-and-set (`Lease.renew`: nonce + `expires_at`); one of renew/reap wins, never both |
+| T8 | Worker's job outlives its lease | worker runs under `deadline` (min of claim TTL and node timeout) and completes `deadline_exceeded` instead of reporting late success |
 
 ## 3. Capacity & scheduling edge cases
 
@@ -38,6 +44,8 @@ The checklist a production reviewer actually reads. Every row is either implemen
 | C5 | Pinned node dies | pin is soft: `retry` attempts on same node, then fallback with audit |
 | C6 | Bin-packing vs spread conflict | constraints resolve in order: pin > anti-affinity > spread > pack |
 | C7 | Replica count changed mid-lease | desired vs actual reconciled at next tick; leases unaffected until expiry |
+| C8 | Worker dies without heartbeat | lease TTL lapses → attempt fails `lease_expired` (retry policy applies) → scheduler reaps the slot and grants a fresh one |
+| C9 | No worker polling at all | lease-bound nodes stay `dispatched`; visible in `/v1/attempts` and `/v1/status`; node/workflow timeouts bound the stall |
 | C8 | Two workloads with same tag priority | tie-break by (oldest desired_ts, name) — deterministic |
 
 ## 4. Workflow edges

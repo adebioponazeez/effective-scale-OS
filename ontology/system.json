@@ -1,0 +1,716 @@
+{
+  "version": "1.0.0",
+  "purpose": "Machine-readable ontology for effective-scale-OS + SAF. tools/audit.py checks the code against this file: states, transitions, entities, invariants, capabilities and claims. Drift fails the audit, and the audit runs in the kernel test suite.  Dormant inventory is empty: modules are wired into production or deleted, never left as inventory.",
+  "product_version": {
+    "kernel": "0.5.0",
+    "saf": "0.2.0"
+  },
+  "version_literals_allowed": [
+    "sovereign-agent-fabric-v20/saf/core/contracts.py"
+  ],
+  "planes": [
+    {
+      "id": "api",
+      "description": "HTTP control plane: auth, tenancy, idempotency, rate limits",
+      "owned_by": "src/effective_scale/api/server.py"
+    },
+    {
+      "id": "compute",
+      "description": "Workloads, nodes, lease slots, placement, scaling, worker protocol",
+      "owned_by": "src/effective_scale/core/{scheduler,scaler,kernel,workflow}.py"
+    },
+    {
+      "id": "workflow",
+      "description": "DAG state machines, attempts, retries, timeouts, cancel, cron, DLQ",
+      "owned_by": "src/effective_scale/core/workflow.py"
+    },
+    {
+      "id": "data",
+      "description": "Partitioned event bus, consumer groups, offsets, backpressure, DLQ",
+      "owned_by": "src/effective_scale/core/events.py"
+    },
+    {
+      "id": "persistence",
+      "description": "Single-writer store port; memory + SQLite adapters",
+      "owned_by": "src/effective_scale/ports/store.py"
+    },
+    {
+      "id": "safety",
+      "description": "Policy gate, autonomy levels, evidence ledger, save-proof, rollback",
+      "owned_by": "saf/core/policy.py, saf/evidence/*, saf/tools/backup.py"
+    },
+    {
+      "id": "capability",
+      "description": "Intent compilation, capability resolution, resources, execution lifecycle",
+      "owned_by": "saf/core/{compiler,resolver}.py, saf/runtime/executor.py"
+    },
+    {
+      "id": "observability",
+      "description": "Structured logs, metrics, trace ids, audit trail",
+      "owned_by": "src/effective_scale/observability/registry.py, saf/runtime/stats.py"
+    },
+    {
+      "id": "operations",
+      "owned_by": "deploy/{systemd,windows,k8s} + Dockerfile/docker-compose.yml",
+      "description": "supervision, restart policy, health probes and longevity; restart-safety is a kernel property (K22), enforced by the supervisor contract (C-ops)"
+    }
+  ],
+  "entities": [
+    {
+      "name": "Namespace",
+      "plane": "api",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "namespaces",
+      "identity": "name",
+      "states": [],
+      "terminal": false,
+      "api": [
+        "POST /v1/namespaces",
+        "GET /v1/namespaces"
+      ]
+    },
+    {
+      "name": "Token",
+      "plane": "api",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "tokens",
+      "identity": "id",
+      "states": [],
+      "terminal": false,
+      "api": [
+        "POST /v1/tokens",
+        "GET /v1/me"
+      ]
+    },
+    {
+      "name": "Workload",
+      "plane": "compute",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "workloads",
+      "identity": "id",
+      "states_enum": "WorkloadStatus",
+      "states": [
+        "active",
+        "paused",
+        "deleting"
+      ],
+      "terminal": false,
+      "api": [
+        "POST /v1/workloads",
+        "GET /v1/workloads",
+        "POST /v1/workloads/{wid}/scale"
+      ]
+    },
+    {
+      "name": "Node",
+      "plane": "compute",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "nodes",
+      "identity": "id",
+      "states_enum": "NodeState",
+      "states": [
+        "active",
+        "cordoned",
+        "draining",
+        "offline"
+      ],
+      "terminal": false,
+      "api": [
+        "POST /v1/nodes",
+        "POST /v1/nodes/{nid}/cordon",
+        "POST /v1/nodes/{nid}/drain"
+      ]
+    },
+    {
+      "name": "Lease",
+      "plane": "compute",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "leases",
+      "identity": "id",
+      "states_enum": "LeaseState",
+      "states": [
+        "active",
+        "renewing",
+        "expired",
+        "released"
+      ],
+      "terminal": true,
+      "note": "a lease is a slot, not an execution",
+      "api": [
+        "GET /v1/leases"
+      ]
+    },
+    {
+      "name": "Workflow",
+      "plane": "workflow",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "workflows",
+      "identity": "id",
+      "states_enum": "WorkflowStatus",
+      "states": [
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled"
+      ],
+      "terminal": true,
+      "api": [
+        "POST /v1/workflows",
+        "GET /v1/workflows/{wid}",
+        "POST /v1/workflows/{wid}/cancel"
+      ]
+    },
+    {
+      "name": "WorkflowNode",
+      "plane": "workflow",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "workflows",
+      "identity": "wf.id + node.id",
+      "states_enum": "NodeStatus",
+      "states": [
+        "pending",
+        "dispatched",
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "skipped"
+      ],
+      "terminal": true,
+      "api": [
+        "POST /v1/workflows/{wid}/retry-node/{nid}"
+      ]
+    },
+    {
+      "name": "Attempt",
+      "plane": "workflow",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "attempts",
+      "identity": "id",
+      "states_enum": "AttemptStatus",
+      "states": [
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled"
+      ],
+      "terminal": true,
+      "api": [
+        "GET /v1/attempts",
+        "POST /v1/attempts/{aid}/claim",
+        "POST /v1/attempts/{aid}/heartbeat",
+        "POST /v1/attempts/{aid}/complete"
+      ]
+    },
+    {
+      "name": "EventMsg",
+      "plane": "data",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "events",
+      "identity": "id",
+      "states_enum": "EventStatus",
+      "states": [
+        "pending",
+        "delivered",
+        "dead"
+      ],
+      "terminal": true,
+      "api": [
+        "POST /v1/events",
+        "GET /v1/events/{topic}",
+        "GET /v1/events/{topic}/dlq"
+      ]
+    },
+    {
+      "name": "DlqEntry",
+      "plane": "data",
+      "module": "src/effective_scale/domain/models.py",
+      "store_table": "dlq",
+      "identity": "id",
+      "states": [],
+      "terminal": true,
+      "api": [
+        "GET /v1/events/{topic}/dlq"
+      ]
+    },
+    {
+      "name": "Capability",
+      "plane": "capability",
+      "module": "sovereign-agent-fabric-v20/saf/core/contracts.py",
+      "identity": "cap:// URI",
+      "states": [],
+      "terminal": false,
+      "note": "permanent abstraction; implementations are temporary resources"
+    },
+    {
+      "name": "Resource",
+      "plane": "capability",
+      "module": "sovereign-agent-fabric-v20/saf/agents/base.py",
+      "identity": "resource_id",
+      "states": [],
+      "terminal": false,
+      "note": "agent runtime, model provider or deterministic local runtime"
+    },
+    {
+      "name": "Task",
+      "plane": "capability",
+      "module": "sovereign-agent-fabric-v20/saf/core/contracts.py",
+      "identity": "intent + required_capabilities",
+      "states": [],
+      "terminal": false
+    },
+    {
+      "name": "Execution",
+      "plane": "capability",
+      "module": "sovereign-agent-fabric-v20/saf/runtime/executor.py",
+      "identity": "execution_id",
+      "states": [
+        "succeeded",
+        "partial",
+        "failed",
+        "blocked"
+      ],
+      "terminal": true
+    },
+    {
+      "name": "Step",
+      "plane": "capability",
+      "module": "sovereign-agent-fabric-v20/saf/core/contracts.py",
+      "identity": "execution_id + capability",
+      "states": [
+        "succeeded",
+        "unsupported",
+        "unavailable",
+        "failed",
+        "blocked"
+      ],
+      "terminal": true
+    },
+    {
+      "name": "RollbackPoint",
+      "plane": "safety",
+      "module": "sovereign-agent-fabric-v20/saf/tools/backup.py",
+      "identity": "execution_id",
+      "states": [],
+      "terminal": false
+    },
+    {
+      "name": "OutboxEntry",
+      "plane": "capability",
+      "module": "sovereign-agent-fabric-v20/saf/transport/outbox.py",
+      "identity": "id",
+      "states": [
+        "pending",
+        "acked"
+      ],
+      "terminal": true
+    },
+    {
+      "name": "EvidenceRecord",
+      "plane": "safety",
+      "module": "sovereign-agent-fabric-v20/saf/evidence/ledger.py",
+      "identity": "hash (chain)",
+      "states": [],
+      "terminal": false
+    },
+    {
+      "name": "AuditEntry",
+      "plane": "observability",
+      "module": "src/effective_scale/core/kernel.py",
+      "store_table": "audit",
+      "identity": "autoincrement id",
+      "states": [],
+      "terminal": true
+    }
+  ],
+  "transitions": {
+    "Workflow": {
+      "pending": [
+        "running",
+        "cancelled"
+      ],
+      "running": [
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled"
+      ]
+    },
+    "WorkflowNode": {
+      "pending": [
+        "dispatched",
+        "skipped",
+        "cancelled"
+      ],
+      "dispatched": [
+        "running",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "pending",
+        "skipped",
+        "cancelled"
+      ],
+      "running": [
+        "succeeded",
+        "failed",
+        "timed_out",
+        "skipped",
+        "cancelled"
+      ],
+      "failed": [
+        "pending"
+      ],
+      "timed_out": [
+        "pending"
+      ]
+    },
+    "Attempt": {
+      "running": [
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled"
+      ]
+    },
+    "Lease": {
+      "active": [
+        "renewing",
+        "expired",
+        "released"
+      ],
+      "renewing": [
+        "active",
+        "expired",
+        "released"
+      ]
+    },
+    "EventMsg": {
+      "pending": [
+        "delivered",
+        "dead"
+      ]
+    }
+  },
+  "invariants": [
+    {
+      "id": "K1",
+      "plane": "persistence",
+      "statement": "every mutation goes through the single writer (kernel.write / writer thread)",
+      "enforced_by": "src/effective_scale/core/kernel.py",
+      "tested_by": "tests/test_chaos.py"
+    },
+    {
+      "id": "K2",
+      "plane": "persistence",
+      "statement": "readers only ever observe complete snapshots (atomic swap, never a torn mutation)",
+      "enforced_by": "src/effective_scale/ports/store.py",
+      "tested_by": "tests/test_chaos.py"
+    },
+    {
+      "id": "K3",
+      "plane": "compute",
+      "statement": "state transitions are table-checked; illegal jumps raise",
+      "enforced_by": "src/effective_scale/domain/states.py",
+      "tested_by": "tests/test_workflow.py"
+    },
+    {
+      "id": "K4",
+      "plane": "workflow",
+      "statement": "a lease-bound attempt has at most one live owner (claim binds holder + fencing nonce)",
+      "enforced_by": "src/effective_scale/core/workflow.py",
+      "tested_by": "tests/test_workers.py"
+    },
+    {
+      "id": "K5",
+      "plane": "workflow",
+      "statement": "completion is idempotent; fenced or stale completions never mutate state",
+      "enforced_by": "src/effective_scale/core/workflow.py",
+      "tested_by": "tests/test_workers.py"
+    },
+    {
+      "id": "K6",
+      "plane": "api",
+      "statement": "replayed POSTs with an Idempotency-Key return the original response and apply once",
+      "enforced_by": "src/effective_scale/api/server.py",
+      "tested_by": "tests/test_api.py"
+    },
+    {
+      "id": "K7",
+      "plane": "api",
+      "statement": "namespace isolation: an entity outside the caller's namespace is not found (404), never leaked",
+      "enforced_by": "src/effective_scale/api/server.py",
+      "tested_by": "tests/test_workers.py"
+    },
+    {
+      "id": "K8",
+      "plane": "api",
+      "statement": "inputs and results are size-bounded (body limit, attempt result cap)",
+      "enforced_by": "src/effective_scale/api/server.py",
+      "tested_by": "tests/test_workers.py"
+    },
+    {
+      "id": "K9",
+      "plane": "data",
+      "statement": "event lag is bounded: producers get backpressure instead of unbounded memory",
+      "enforced_by": "src/effective_scale/core/events.py",
+      "tested_by": "tests/test_events.py"
+    },
+    {
+      "id": "K10",
+      "plane": "compute",
+      "statement": "lease-bound attempts cannot be completed after their slot expires; the node retries",
+      "enforced_by": "src/effective_scale/core/workflow.py",
+      "tested_by": "tests/test_workers.py"
+    },
+    {
+      "id": "K11",
+      "plane": "compute",
+      "statement": "expired lease slots are reclaimed so capacity accounting stays honest",
+      "enforced_by": "src/effective_scale/core/kernel.py",
+      "tested_by": "tests/test_workers.py"
+    },
+    {
+      "id": "K12",
+      "plane": "safety",
+      "statement": "destructive intent at executing autonomy (A3+) is refused before any execution",
+      "enforced_by": "sovereign-agent-fabric-v20/saf/core/policy.py",
+      "tested_by": "sovereign-agent-fabric-v20/tests/test_executor.py"
+    },
+    {
+      "id": "K13",
+      "plane": "safety",
+      "statement": "a mutation is only 'verified' when disk state matches an expected hash or demonstrably changed (claims are not evidence)",
+      "enforced_by": "sovereign-agent-fabric-v20/saf/evidence/verification.py",
+      "tested_by": "sovereign-agent-fabric-v20/tests/test_executor.py"
+    },
+    {
+      "id": "K14",
+      "plane": "safety",
+      "statement": "the evidence log is append-only and hash-chained; verification detects tampering",
+      "enforced_by": "sovereign-agent-fabric-v20/saf/evidence/ledger.py",
+      "tested_by": "sovereign-agent-fabric-v20/tests/test_durability.py"
+    },
+    {
+      "id": "K15",
+      "plane": "safety",
+      "statement": "durable JSONL state survives torn writes (quarantine) and concurrent appends (file lock + fsync)",
+      "enforced_by": "sovereign-agent-fabric-v20/saf/core/durability.py",
+      "tested_by": "sovereign-agent-fabric-v20/tests/test_durability.py"
+    },
+    {
+      "id": "K16",
+      "plane": "capability",
+      "statement": "capability resolution is deterministic: same registry state, same ranking",
+      "enforced_by": "sovereign-agent-fabric-v20/saf/core/resolver.py",
+      "tested_by": "sovereign-agent-fabric-v20/tests/test_core.py"
+    },
+    {
+      "id": "K17",
+      "plane": "capability",
+      "statement": "a runtime exception never escapes the executor; it becomes a structured step result",
+      "enforced_by": "sovereign-agent-fabric-v20/saf/runtime/executor.py",
+      "tested_by": "sovereign-agent-fabric-v20/tests/test_executor.py"
+    },
+    {
+      "id": "K18",
+      "plane": "capability",
+      "statement": "offline submissions are durable and replayed idempotently (payload hash as idempotency key)",
+      "enforced_by": "sovereign-agent-fabric-v20/saf/transport/outbox.py",
+      "tested_by": "sovereign-agent-fabric-v20/tests/test_outbox.py"
+    },
+    {
+      "id": "K19",
+      "plane": "capability",
+      "statement": "a worker cannot outlive its lease silently: it heartbeats and reports deadline_exceeded instead of a late success",
+      "enforced_by": "sovereign-agent-fabric-v20/saf/runtime/worker.py",
+      "tested_by": "sovereign-agent-fabric-v20/tests/test_worker.py"
+    },
+    {
+      "id": "K20",
+      "plane": "api",
+      "statement": "the reference kernel has zero third-party runtime dependencies",
+      "enforced_by": "ontology/system.json#claims.C-stdlib",
+      "tested_by": "tests/test_audit.py"
+    },
+    {
+      "id": "K21",
+      "plane": "operations",
+      "statement": "readiness reflects the ability to commit: /v1/health/ready is 503 whenever the kernel cannot execute a store statement or its writer is wedged, while /v1/health/live stays 200 because the process is still recoverable",
+      "enforced_by": "src/effective_scale/api/server.py",
+      "tested_by": "tests/test_cli.py"
+    },
+    {
+      "id": "K22",
+      "plane": "operations",
+      "statement": "sustained operation keeps every background loop alive with bounded durable state, and an abrupt restart resumes work without duplicating attempts",
+      "enforced_by": "src/effective_scale/core/kernel.py",
+      "tested_by": "tests/test_soak.py"
+    },
+    {
+      "id": "K23",
+      "plane": "compute",
+      "statement": "placement never overcommits a node: CPU and memory are each compared against their own used totals, and a node is skipped as soon as either budget is exhausted for a workload",
+      "enforced_by": "src/effective_scale/core/scheduler.py",
+      "tested_by": "tests/test_scheduler.py"
+    },
+    {
+      "id": "K24",
+      "plane": "api",
+      "statement": "client-driven writes are bounded: a saturated writer backlog or a breaker opened by repeated infrastructure failures returns 503 overloaded (shedding load, never buffering it), while loops and the readiness probe bypass both guards because they are the recovery path",
+      "enforced_by": "src/effective_scale/core/kernel.py",
+      "tested_by": "tests/test_writer_isolation.py"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "cap://software/repository/inspect",
+      "satisfied_by": [
+        "saf://local"
+      ],
+      "deterministic": true
+    },
+    {
+      "id": "cap://software/testing/execute",
+      "satisfied_by": [
+        "saf://local"
+      ],
+      "deterministic": true
+    },
+    {
+      "id": "cap://verification/save-proof",
+      "satisfied_by": [
+        "saf://local"
+      ],
+      "deterministic": true
+    },
+    {
+      "id": "cap://software/code/refactor",
+      "satisfied_by": [
+        "agent://cursor-cli",
+        "agent://codex-cli",
+        "agent://opencode",
+        "agent://aider"
+      ],
+      "deterministic": false
+    },
+    {
+      "id": "cap://software/code/inspect",
+      "satisfied_by": [
+        "agent://pi"
+      ],
+      "deterministic": false
+    },
+    {
+      "id": "cap://software/agent/execute",
+      "satisfied_by": [
+        "agent://pi",
+        "agent://cursor-cli",
+        "agent://codex-cli",
+        "agent://opencode",
+        "agent://aider"
+      ],
+      "deterministic": false
+    },
+    {
+      "id": "cap://general/agent/execute",
+      "satisfied_by": [
+        "agent://pi",
+        "agent://cursor-cli",
+        "agent://codex-cli",
+        "agent://opencode",
+        "agent://aider"
+      ],
+      "deterministic": false,
+      "note": "compiler fallback for unclassified intents"
+    },
+    {
+      "id": "cap://software/git/operate",
+      "satisfied_by": [
+        "saf://git"
+      ],
+      "deterministic": true
+    },
+    {
+      "id": "cap://research/web",
+      "satisfied_by": [
+        "saf://web"
+      ],
+      "deterministic": true
+    },
+    {
+      "id": "cap://interaction/browser",
+      "satisfied_by": [],
+      "deterministic": false,
+      "unimplemented": true,
+      "note": "declared intent; needs a browser adapter"
+    }
+  ],
+  "claims": [
+    {
+      "id": "C-stdlib",
+      "statement": "source under src/ imports only the Python standard library",
+      "check": "stdlib_only",
+      "severity": "high"
+    },
+    {
+      "id": "C-routes",
+      "statement": "every route documented in docs/09-api-reference.md is registered, and every registered route is documented",
+      "check": "routes",
+      "severity": "high"
+    },
+    {
+      "id": "C-states",
+      "statement": "every state machine declared in this ontology matches the enums and transition tables in code",
+      "check": "states",
+      "severity": "high"
+    },
+    {
+      "id": "C-persist",
+      "statement": "every persisted entity has a store persister and a table",
+      "check": "persisters",
+      "severity": "medium"
+    },
+    {
+      "id": "C-caps",
+      "statement": "every capability declared here is satisfied by the resources this ontology names (or explicitly unimplemented)",
+      "check": "capabilities",
+      "severity": "high"
+    },
+    {
+      "id": "C-deadcode",
+      "statement": "no module is unreachable: every source module is referenced outside its own package or declared dormant with a reason",
+      "check": "dead_modules",
+      "severity": "medium"
+    },
+    {
+      "id": "C-invariants",
+      "statement": "every invariant names an enforcement point and a test that exists",
+      "check": "invariants",
+      "severity": "high"
+    },
+    {
+      "id": "C-test-counts",
+      "statement": "test counts stated in the READMEs match the tests actually discoverable",
+      "check": "test_counts",
+      "severity": "low"
+    },
+    {
+      "id": "C-versions",
+      "statement": "product versions are declared once: __init__.py, pyproject, the ontology and the deploy manifests (image tags) agree, and no other source file hardcodes a version literal",
+      "check": "versions",
+      "severity": "medium"
+    },
+    {
+      "id": "C-ops",
+      "statement": "every deployment artifact declares a restart policy and wires a health probe to /v1/health/ready (readiness) and /v1/health/live (liveness)",
+      "check": "operations",
+      "severity": "high"
+    }
+  ],
+  "dormant": []
+}
