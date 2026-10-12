@@ -152,6 +152,73 @@ def test_openrouter_http_error_maps_to_result(monkeypatch):
     assert "HTTP 429" in res.text
 
 
+def test_openrouter_success_maps_the_response_contract(monkeypatch):
+    """The fabric reads text + usage from this adapter; pin the mapping."""
+    import json as _json
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return _json.dumps({
+                "model": "openai/gpt-5",
+                "choices": [{"message": {"content": "hello from the model"}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 3},
+            }).encode()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    from saf.core.contracts import ModelRequest
+
+    res = asyncio.run(OpenRouterAdapter().generate(ModelRequest(prompt="hi", system="be safe")))
+    assert res.ok is True
+    assert res.text == "hello from the model"
+    assert res.model == "openai/gpt-5"
+    assert res.usage["completion_tokens"] == 3
+    assert res.raw["choices"][0]["message"]["content"].startswith("hello")
+
+
+def test_openrouter_network_failure_is_structured(monkeypatch):
+    import urllib.error
+
+    def fake_urlopen(*a, **k):
+        raise urllib.error.URLError("name resolution failed")
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    from saf.core.contracts import ModelRequest
+
+    res = asyncio.run(OpenRouterAdapter().generate(ModelRequest(prompt="hi")))
+    assert res.ok is False
+    assert "unreachable" in res.text
+
+
+@pytest.mark.parametrize("body", [b"this is not json", b'{"model": "x"}'])
+def test_openrouter_malformed_body_is_structured(monkeypatch, body):
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return body
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+    from saf.core.contracts import ModelRequest
+
+    res = asyncio.run(OpenRouterAdapter().generate(ModelRequest(prompt="hi")))
+    assert res.ok is False
+    assert "malformed response" in res.text
+    assert res.raw["parse_error"]
+
+
 def test_resolver_offline_penalizes_remote_models(tmp_path):
     from saf.core.registry import Registry
     from saf.core.resolver import CapabilityResolver

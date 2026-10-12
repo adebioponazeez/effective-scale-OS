@@ -5,6 +5,8 @@
 - Unauthenticated API abuse, token theft/replay, cross-tenant data access, secret leakage via
   logs/API, audit forgery, malformed payload attacks, resource exhaustion (body size, rate),
   supply-chain (zero runtime deps ⇒ no third-party supply chain by construction).
+- **Server-side request forgery and egress abuse** (agent fabric): every outbound request from
+  `saf://web` passes a deny-by-default `NetworkPolicy` — see §5a.
 
 **Out of scope:** TLS termination (delegated to front proxy / k8s ingress), OS hardening,
 mTLS service mesh (documented adapter), multi-factor auth (delegated to Identity provider;
@@ -43,6 +45,27 @@ the JWT hook is the adapter).
 | Workflow concurrency | 16/node | bounded fan-out |
 | Lease ambiguity | renewal refused after TTL/2 | bounded double-run window |
 
+## 5a. Outbound network (agent fabric)
+
+The kernel itself makes no outbound calls. The SAF subproject can, so it does so through one
+policy object (`saf/core/netpolicy.py`) that is constructed once and never mutated per request.
+
+| Control | Default | Why |
+|---|---|---|
+| Host allowlist | **empty — deny by default** | an unconfigured deployment cannot exfiltrate or be used as a pivot; `SAF_NETWORK_ALLOW=host1,*.host2` opts in |
+| Scheme allowlist | `https` only | `http` must be requested explicitly |
+| Port allowlist | `443`, `80` (`SAF_NETWORK_PORTS` extends it) | no scanning of arbitrary services |
+| SSRF address guard | on | the host is resolved and **every** address is checked: private, loopback, link-local, reserved, multicast and unspecified are refused (this is what blocks `169.254.169.254`, the cloud metadata service); `allow_private` is an explicit opt-in for on-prem |
+| Redirects | ≤ 3, re-validated per hop | a permitted host cannot bounce a fetch to a forbidden one |
+| Response bound | `max_bytes` (2 MB default) | oversized bodies are truncated and flagged, never buffered |
+| Time bound | `timeout_s` (15 s default) | a slow endpoint cannot pin a worker |
+
+The runtime is fetch-and-hash, not a crawler: it contacts **caller-supplied URLs** and returns
+status, content type, byte count, sha256 and a bounded excerpt as evidence. It writes nothing to
+disk and has no search capability (documented in `saf/agents/web.py`). Every decision is testable
+offline — `saf/tests/test_web_runtime.py` asserts the deny paths (blank allowlist, bad scheme,
+wrong port, loopback, metadata IP, cross-policy redirect) without touching the internet.
+
 ## 6. Deployment checklist (production)
 
 1. `ES_AUTH_SECRET` >= 32 random bytes; `ES_ADMIN_TOKEN` >= 32 random bytes; both via secret refs.
@@ -52,3 +75,6 @@ the JWT hook is the adapter).
    `workflow.deadletter`, `events.deadletter`.
 5. Restrict network so only the control-plane port is open; workers call back over mTLS if
    external (documented adapter).
+6. Agent fabric: set `SAF_NETWORK_ALLOW` to the exact research hosts you permit (never `*`), keep
+   `allow_private` off, and leave provider keys (`OPENROUTER_API_KEY`) unset until a provider is
+   needed — the adapter registers itself only when the key exists.

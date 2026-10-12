@@ -6,7 +6,12 @@ Placement constraint order (hard -> soft):
   3. pin: node id must match exactly
   4. anti-affinity/spread: avoid a second replica on the same node when alternative exists
   5. capacity: cpu + memory must fit
-  6. policy order: bin_pack (max free), round_robin (least loaded), fifo/priority (first-fit)
+  6. policy order (each policy is real; none falls back to another):
+       bin_pack    - most free resources first (minimise fragmentation)
+       round_robin - fewest active leases first (even spread)
+       fifo        - earliest-created eligible node first (queue-like fill, no reshuffle)
+       priority    - affinity to nodes already running this workload, then least loaded
+                     (keeps a high-priority service together instead of churning nodes)
 
 Scale-down prefers leases on draining nodes first, then oldest first — deterministic.
 """
@@ -67,8 +72,10 @@ def _eligible_nodes(snap: Snapshot, wl: Workload, load: dict[str, list]) -> list
             continue
         if not set(wl.node_tags).issubset(set(node.tags)):
             continue
-        cpu, mem, _ = load[node.id]
-        if node.capacity_cpu - cpu < wl.cpu or node.capacity_mem - mem < wl.memory:
+        # load[node.id] = (active leases, cpu used, mem used) — compare like for like,
+        # otherwise placement silently overcommits (see K23 / tests/test_scheduler.py)
+        _, cpu_used, mem_used = load[node.id]
+        if node.capacity_cpu - cpu_used < wl.cpu or node.capacity_mem - mem_used < wl.memory:
             continue
         if wl.spread and load[node.id][0] > 0:
             continue  # anti-affinity: another node should host the next replica
@@ -90,7 +97,17 @@ def _pick(snap: Snapshot, wl: Workload, load: dict[str, list], policy: Schedulin
         nodes.sort(key=lambda n: (-(n.capacity_cpu - load[n.id][1]), n.id))
     elif policy == SchedulingPolicy.ROUND_ROBIN:
         nodes.sort(key=lambda n: (load[n.id][0], n.id))
-    else:  # FIFO / PRIORITY -> first-fit (least-recently-used by node id for determinism)
+    elif policy == SchedulingPolicy.FIFO:
+        # queue-like fill: earliest-created eligible node first, until it is full
+        nodes.sort(key=lambda n: (n.created_at, n.id))
+    elif policy == SchedulingPolicy.PRIORITY:
+        # affinity: stay on nodes already hosting this workload, then least loaded
+        holders = {
+            lease.node_id for lease in snap.leases.values()
+            if lease.workload_id == wl.id and lease.state == LeaseState.ACTIVE
+        }
+        nodes.sort(key=lambda n: (n.id not in holders, load[n.id][0], load[n.id][1], n.id))
+    else:  # unknown policy (older records): deterministic least-loaded first-fit
         nodes.sort(key=lambda n: (load[n.id][1], n.id))
     return nodes[0]
 

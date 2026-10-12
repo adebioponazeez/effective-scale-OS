@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PYTHON ?= python3
 PYTHONPATH := src
 
-.PHONY: test test-v race smoke run clean fmt help
+.PHONY: test test-v test-saf test-all audit ontology coverage race soak smoke run clean fmt help
 
 help: ## show targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -12,6 +12,32 @@ test: ## run full suite (unit + integration + concurrency + chaos)
 
 test-v: ## verbose suite
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m unittest discover -s . -p 'test_*.py' -v
+
+audit: ## check the code against ontology/system.json and the docs (fails on drift)
+	$(PYTHON) tools/audit.py
+
+ontology: ## regenerate docs/11-ontology.md from ontology/system.json
+	$(PYTHON) tools/audit.py --render-ontology
+
+test-saf: ## run the SAF subproject suite (needs pydantic; `pip install -e ".[test]"`)
+	cd sovereign-agent-fabric-v20 && PYTHONPATH=. $(PYTHON) -m pytest -q
+
+test-all: test test-saf ## kernel + SAF suites
+
+coverage: ## statement coverage for both projects; fails below the floors (kernel 88 %, SAF 88 %)
+	@set -e; \
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m coverage run --source=src/effective_scale \
+		-m unittest discover -s . -p 'test_*.py' -q; \
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m coverage report | tail -1; \
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m coverage report --fail-under=88 > /dev/null; \
+	cd sovereign-agent-fabric-v20; \
+	PYTHONPATH=. $(PYTHON) -m coverage run --source=saf -m pytest -q; \
+	PYTHONPATH=. $(PYTHON) -m coverage report | tail -1; \
+	PYTHONPATH=. $(PYTHON) -m coverage report --fail-under=88 > /dev/null; \
+	echo "COVERAGE OK: both projects at or above the 88 % floor"
+
+soak: ## sustained-load longevity test (loops alive, bounded state, restart under load)
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m unittest tests.test_soak -v
 
 race: ## stress: repeat the suite 5x (catches flaky interleavings)
 	@for i in 1 2 3 4 5; do \
@@ -42,4 +68,5 @@ run: ## start the kernel (default :8080, local file store)
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m effective_scale --demo
 
 clean: ## remove runtime artifacts
-	rm -rf data __pycache__ src/**/__pycache__ tests/__pycache__ *.db *.db-wal *.db-shm /tmp/es-smoke.db*
+	rm -rf data __pycache__ src/**/__pycache__ tests/__pycache__ *.db *.db-wal *.db-shm \
+		.coverage sovereign-agent-fabric-v20/.coverage /tmp/es-smoke.db*

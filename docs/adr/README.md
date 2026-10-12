@@ -10,5 +10,6 @@ explicit trigger that should make us revisit it.
 | [ADR-003](ADR-003.md) | Delivery semantics: at-least-once + idempotency keys + lease-bounded ambiguity |
 | [ADR-004](ADR-004.md) | Leadership: lease-based single writer, epoch-scoped writes |
 | [ADR-005](ADR-005.md) | Concurrency: single process, one writer thread, snapshot reads |
+| [ADR-006](ADR-006.md) | External workers: pull-based claims with fencing tokens |
 
 Read `../05-adr-summary.md` for the one-line rationale per ADR and the revisit triggers.

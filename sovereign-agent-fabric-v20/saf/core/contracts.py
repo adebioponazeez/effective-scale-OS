@@ -64,3 +64,35 @@ class Candidate(BaseModel):
     cost_estimate: float = 0.0
     latency_estimate_ms: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StepResult(BaseModel):
+    """One capability in the §16 lifecycle: PLAN -> EXECUTE -> VALIDATE -> EVIDENCE."""
+
+    capability: str
+    status: str                      # succeeded | unsupported | unavailable | failed | blocked
+    resource_id: str | None = None
+    summary: str = ""
+    duration_s: float = 0.0
+    attempts: list[dict[str, Any]] = Field(default_factory=list)   # candidate fall-through trace
+    artifacts: list[str] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    verified: bool | None = None     # save-proof verdict for mutating steps
+
+
+class ExecutionResult(BaseModel):
+    """Outcome of a full task execution (deterministic record, JSON-safe)."""
+
+    execution_id: str
+    intent: str
+    ok: bool
+    status: str                      # succeeded | partial | failed | blocked
+    policy: dict[str, Any] = Field(default_factory=dict)
+    steps: list[StepResult] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    rollback_point: str | None = None
+    evidence_hash: str | None = None
+    workspace: str = "."
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    duration_s: float = 0.0

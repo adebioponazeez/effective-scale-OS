@@ -80,4 +80,24 @@ what makes retries safe.
 
 - API is versioned (`/v1`). Breaking changes bump the prefix.
 - State format is versioned inside the store; migrations run on open and refuse to downgrade.
-- Semantic versioning for the package; CI gates: unit + concurrency + chaos + fix-python + fix-doc.
+- Semantic versioning for the package, declared once in `effective_scale.__version__` and enforced
+  by the `C-versions` audit check (kernel 0.5.0, SAF 0.2.0 as of this revision).
+- CI gates: unit + concurrency + chaos + audit (ontology/docs drift) + SAF suite.
+
+## 6. How this package is kept honest
+
+Claims in this documentation set are enforced, not asserted. The system model lives in
+[`ontology/system.json`](../ontology/system.json) — planes, entities, state machines, invariants
+K1–K22 (each naming its enforcement point and its test), declared capabilities, product
+versions, and the operations plane (supervision + probes, enforced by `C-ops`).
+`python3 tools/audit.py` (also `make audit`) compares that ontology with the code and the docs in ten
+checks, with stable finding ids and a machine-readable `--json` mode. Gaps that are knowingly accepted
+are listed in [`ontology/known-gaps.json`](../ontology/known-gaps.json) and **that list may only
+shrink** — `tests/test_audit.py` fails the build if a fixed gap is left in it, and it injects synthetic
+drift to prove every check can actually fail. The human-readable rendering of the ontology is
+generated (`make ontology` → [`11-ontology.md`](11-ontology.md)); never edit it by hand.
+Longevity is part of the contract too: `make soak` runs sustained load and asserts that every
+background loop stays alive with bounded durable state, and that an abrupt restart resumes work
+without duplicating attempts (K22). The
+evidence-anchored audit of the current state, and the reproduction commands for every number in it,
+are in [`GAP-AUDIT.md`](../GAP-AUDIT.md).

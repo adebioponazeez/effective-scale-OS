@@ -1,0 +1,58 @@
+# effective-scale-OS — systemd unit (single-writer kernel + HTTP control plane).
+#
+# Install:
+#   sudo install -m 0644 deploy/systemd/effective-scale.service /etc/systemd/system/
+#   sudo install -d -o effective-scale -g effective-scale /var/lib/effective-scale /etc/effective-scale
+#   sudo cp deploy/systemd/effective-scale.env.example /etc/effective-scale/effective-scale.env
+#   sudo editor /etc/effective-scale/effective-scale.env     # set ES_AUTH_SECRET / ES_ADMIN_TOKEN
+#   sudo systemctl daemon-reload && sudo systemctl enable --now effective-scale
+#
+# Verify:  systemctl status effective-scale
+#          curl -sf http://127.0.0.1:8080/v1/health/ready && echo ready
+#          journalctl -u effective-scale -f
+#
+# Why Restart=always: the kernel is a single writer with a WAL-backed store; a crash is
+# recoverable by design (tests/test_chaos.py proves replay without double-commit), so the
+# supervisor's job is to bring it straight back rather than leave the fleet idle.
+[Unit]
+Description=effective-scale-OS kernel and control plane
+Documentation=https://github.com/adebioponazeez/effective-scale-OS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=effective-scale
+Group=effective-scale
+WorkingDirectory=/var/lib/effective-scale
+EnvironmentFile=-/etc/effective-scale/effective-scale.env
+# ES_LISTEN / ES_AUTH_SECRET / ES_ADMIN_TOKEN come from the environment file.
+ExecStart=/usr/bin/python3 -m effective_scale \
+    --store /var/lib/effective-scale/effective_scale.db \
+    --listen ${ES_LISTEN} \
+    --secret ${ES_AUTH_SECRET} \
+    --admin-token ${ES_ADMIN_TOKEN} \
+    --log-level info
+Environment=PYTHONPATH=/opt/effective-scale/src
+Restart=always
+RestartSec=2
+# Give the kernel time to stop the API, drain the writer queue and close the store.
+KillSignal=SIGTERM
+TimeoutStopSec=35
+
+# --- hardening (stdlib-only, no shell, no privileged ports)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/effective-scale
+
+[Install]
+WantedBy=multi-user.target

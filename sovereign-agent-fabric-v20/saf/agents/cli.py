@@ -61,28 +61,33 @@ class CliAgentRuntime(AgentRuntime):
 class PiAdapter(CliAgentRuntime):
     binary = "pi"
     resource_id = "agent://pi"
-    capability_ids = ["cap://software/agent/execute", "cap://software/code/inspect"]
+    capability_ids = ["cap://software/agent/execute", "cap://general/agent/execute",
+                      "cap://software/code/inspect"]
 
 
 class CursorCliAdapter(CliAgentRuntime):
     binary = "cursor"
     resource_id = "agent://cursor-cli"
-    capability_ids = ["cap://software/agent/execute", "cap://software/code/refactor"]
+    capability_ids = ["cap://software/agent/execute", "cap://general/agent/execute",
+                      "cap://software/code/refactor"]
 
 
 class CodexCliAdapter(CliAgentRuntime):
     binary = "codex"
     resource_id = "agent://codex-cli"
-    capability_ids = ["cap://software/agent/execute", "cap://software/code/refactor"]
+    capability_ids = ["cap://software/agent/execute", "cap://general/agent/execute",
+                      "cap://software/code/refactor"]
 
 
 class OpenCodeAdapter(CliAgentRuntime):
     binary = "opencode"
     resource_id = "agent://opencode"
-    capability_ids = ["cap://software/agent/execute", "cap://software/code/refactor"]
+    capability_ids = ["cap://software/agent/execute", "cap://general/agent/execute",
+                      "cap://software/code/refactor"]
 
 
 class AiderAdapter(CliAgentRuntime):
     binary = "aider"
     resource_id = "agent://aider"
-    capability_ids = ["cap://software/agent/execute", "cap://software/code/refactor"]
+    capability_ids = ["cap://software/agent/execute", "cap://general/agent/execute",
+                      "cap://software/code/refactor"]

@@ -35,7 +35,7 @@ One process, one writer:
 | API server | serve HTTP, authenticate, validate, dispatch (reads only) | bulkhead: `max_conn` |
 | Scheduler loop | every `schedule_interval` runs pure function → apply decisions | 1 thread |
 | Scaler loop | every `scale_interval` reads metrics → hysteresis decisions | 1 thread |
-| Workflow pump | scan due nodes → dispatch attempts (bounded worker pool) | `workflow_pool` |
+| Workflow pump | scan due nodes → dispatch attempts (bounded worker pool); lease-bound attempts are completed by external workers via the attempts API (ADR-006) | `workflow_pool` |
 | Event pump | dispatch checkpointed messages to consumers (bounded pool) | `event_pool` |
 | Leader loop | heartbeat lease, watch for demotion | 1 thread |
 | Watchdog | monotonic stalls detection; fatal alert + graceful restart | 1 thread |
@@ -90,6 +90,19 @@ output : placement diffs + lease grants
 steps  : 1) satisfy pinned → 2) satisfy anti-affinity/spread → 3) FFD bin-pack by policy →
          4) drain/cordon-aware → 5) fairness (queue depth) → 6) emit plan
 ```
+
+Placement is **constraint-first** (state, tags, pin, spread, then capacity), then policy order.
+Each policy is a distinct ordering of the eligible nodes — none falls back to another:
+
+| Policy | Node order | Use when |
+|---|---|---|
+| `bin_pack` | most free CPU first | minimise fragmentation; fewest nodes |
+| `round_robin` | fewest active leases first | even spread; noisy neighbours |
+| `fifo` | earliest-created node first, filled until full | queue-like fill; predictable bin placement |
+| `priority` | nodes already running this workload first, then least loaded | keep a high-priority service together; avoid churn |
+
+Capacity is enforced per budget: CPU against CPU used, memory against memory used (**K23**). A
+node is skipped as soon as either budget cannot fit the workload — placement never overcommits.
 
 It is a **pure function** → unit-testable without I/O; plans applied through the store with
 `optimistic concurrency` (epoch check — if a lease/plan changed, re-run).

@@ -5,9 +5,10 @@ import argparse
 import signal
 import sys
 import threading
+from dataclasses import dataclass, field
 
 from .adapters import MemoryStore, SQLiteStore
-from .api.server import launch
+from .api.server import ApiServer, launch
 from .core.kernel import Config, Kernel
 
 
@@ -66,6 +67,40 @@ def seed_demo(kernel: Kernel) -> None:
     kernel.logger.log("demo.seeded", info=True)
 
 
+@dataclass
+class Running:
+    """A live kernel + API pair, with an idempotent shutdown (signal-safe)."""
+
+    kernel: Kernel
+    server: ApiServer
+    stopped: threading.Event = field(default_factory=threading.Event)
+
+    def shutdown(self, signum=None, frame=None) -> None:  # noqa: ARG002 — signal signature
+        if self.stopped.is_set():
+            return
+        self.stopped.set()
+        self.server.stop()
+        self.kernel.stop()
+        print("shutdown complete")
+
+
+def serve(config: Config, *, demo: bool = False, install_signals: bool = True,
+          stopped: threading.Event | None = None) -> Running:
+    """Start the kernel and the API. Separated from `main` so the real serving path is
+    testable in-process (argparse and process signals are the only untestable edges)."""
+    store = MemoryStore() if config.store_path == ":memory:" else SQLiteStore(config.store_path)
+    kernel = Kernel(store, config=config)
+    kernel.start()
+    if demo:
+        seed_demo(kernel)
+    running = Running(kernel=kernel, server=launch(kernel),
+                      stopped=stopped or threading.Event())
+    if install_signals:
+        signal.signal(signal.SIGTERM, running.shutdown)
+        signal.signal(signal.SIGINT, running.shutdown)
+    return running
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="effective_scale",
@@ -96,35 +131,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = build_config(args)
-    store = MemoryStore() if config.store_path == ":memory:" else SQLiteStore(config.store_path)
-    kernel = Kernel(store, config=config)
-
     if args.check:
         print("config OK:", config.listen, "store:", config.store_path)
         return 0
 
-    kernel.start()
-    if args.demo:
-        seed_demo(kernel)
-
-    server = launch(kernel)
-    stopped = threading.Event()
-
-    def shutdown(signum, frame):  # noqa: ARG001
-        if stopped.is_set():
-            return
-        stopped.set()
-        server.stop()
-        kernel.stop()
-        print("shutdown complete")
-
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
+    running = serve(config, demo=args.demo)
     try:
-        while not stopped.is_set():
-            stopped.wait(1.0)
+        while not running.stopped.is_set():
+            running.stopped.wait(1.0)
     except KeyboardInterrupt:
-        shutdown(None, None)
+        running.shutdown()
     return 0
 
 

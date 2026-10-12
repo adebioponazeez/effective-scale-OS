@@ -180,3 +180,97 @@ def test_live_submit_against_real_kernel(tmp_path):
     finally:
         api.stop()
         kernel.stop()
+
+
+@pytest.mark.skipif(_find_effective_scale_src() is None,
+                    reason="effective-scale-OS source not present (repo sibling)")
+def test_live_worker_executes_a_capability_workflow(tmp_path):
+    """The full loop: kernel schedules -> SAF claims -> executes -> completes."""
+    src = _find_effective_scale_src()
+    sys.path.insert(0, str(src))
+
+    from effective_scale.adapters.memory_store import MemoryStore
+    from effective_scale.api.server import ApiServer
+    from effective_scale.core.kernel import Config, Kernel
+    from effective_scale.ports.logger import MemLogger
+
+    from saf.runtime.bootstrap import build_executor
+    from saf.runtime.worker import KernelWorker
+
+    cfg = Config(
+        store_path=":memory:", listen="127.0.0.1:0",
+        auth_secret="test-secret-0123456789abcdef", admin_token="bootstrap-test-token",
+        scheduler_interval=0.05, scale_interval=0.05, workflow_interval=0.02,
+        event_interval=0.02, heartbeat_ttl=1.0, watchdog_stall=30.0,
+    )
+    kernel = Kernel(MemoryStore(), config=cfg, logger=MemLogger())
+    kernel.start()
+    api = ApiServer(kernel)
+    api.start()
+    port = api._httpd.server_address[1]
+    try:
+        from http.client import HTTPConnection
+
+        def call(method, path, body=None, token=None, admin=False):
+            conn = HTTPConnection("127.0.0.1", port, timeout=10)
+            headers = {"Content-Type": "application/json"}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if admin:
+                headers["X-Admin-Token"] = "bootstrap-test-token"
+            conn.request(method, path, body=json.dumps(body) if body is not None else None,
+                         headers=headers)
+            resp = conn.getresponse()
+            payload = json.loads(resp.read() or b"{}")
+            conn.close()
+            return resp.status, payload
+
+        call("POST", "/v1/namespaces", {"name": "demo"}, admin=True)
+        _, issued = call("POST", "/v1/tokens",
+                         {"namespace": "demo", "scopes": ["read", "write"]}, admin=True)
+        token = issued["token"]
+        call("POST", "/v1/nodes", {"name": "n1", "cpu": 2000, "memory": 4096}, admin=True)
+        _, wl = call("POST", "/v1/workloads", {"name": "saf", "image": "saf", "replicas": 1},
+                     token=token)
+
+        workspace = tmp_path / "ws"
+        (workspace / "pkg").mkdir(parents=True)
+        (workspace / "pkg" / "mod.py").write_text("print(1)\n")
+        (workspace / "README.md").write_text("hi\n")
+
+        transport = EffectiveScaleTransport(f"http://127.0.0.1:{port}", token=token,
+                                            namespace="demo", node_timeout_s=60.0)
+        executor = build_executor(str(workspace), state_dir=str(tmp_path / "state"),
+                                  test_command=["python3", "-c", "print('green')"])
+        task = compile_intent("inspect repository and run tests")
+        submitted = asyncio.run(transport.submit(task, workload_id=wl["workload"]["id"]))
+        wid = submitted["workflow"]["id"]
+
+        worker = KernelWorker(transport, executor, worker_id="saf-live", claim_ttl=30.0,
+                              poll_interval=0.05)
+        summary = asyncio.run(worker.serve(max_jobs=2, idle_limit=60))
+        assert summary["status"] == "ok", summary
+        assert summary["succeeded"] == 2, summary["records"]
+
+        # dependency order respected: inspect completed before testing started
+        assert [r["capability"] for r in summary["records"]] == [
+            "cap://software/repository/inspect", "cap://software/testing/execute"]
+
+        status, body = call("GET", f"/v1/workflows/{wid}", token=token)
+        wf = body["workflow"]
+        assert wf["status"] == "succeeded"
+        assert all(n["status"] == "succeeded" for n in wf["nodes"])
+        attempts = wf["attempts"]
+        assert len(attempts) == 2
+        assert {a["worker_id"] for a in attempts} == {"saf-live"}
+        assert all(a["result"]["evidence_hash"] for a in attempts)
+        assert {a["result"]["resource_id"] for a in attempts} == {"saf://local"}
+
+        # the local hash-chained evidence ledger verifies after live execution
+        from saf.evidence.ledger import EvidenceLedger
+
+        report = EvidenceLedger(str(tmp_path / "state" / "evidence.jsonl")).verify()
+        assert report["ok"] and report["records"] >= 4  # 2 steps + rollback/result records
+    finally:
+        api.stop()
+        kernel.stop()

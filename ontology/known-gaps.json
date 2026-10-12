@@ -1,0 +1,15 @@
+{
+  "note": "Audited findings accepted for now. This list may only shrink: when a check stops firing, delete its entry (tests/test_audit.py fails on stale entries). Anything not listed here is an unexpected finding and fails the audit and the kernel suite.",
+  "gaps": [
+    {
+      "id": "C-caps:unimplemented:cap://interaction/browser",
+      "severity": "medium",
+      "check": "capabilities",
+      "title": "cap://interaction/browser has no implementation",
+      "detail": "Declared capability with no runtime; browser automation is a \u00a717 trust-pipeline concern.",
+      "plan": "Browser adapter behind the sandbox/trust pipeline; do not register it before policy enforcement exists.",
+      "revisit": "after the \u00a717 trust pipeline slice",
+      "exit_criteria": "A browser resource is registered with a tested policy boundary."
+    }
+  ]
+}

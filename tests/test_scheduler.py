@@ -111,6 +111,120 @@ class SchedulerTest(unittest.TestCase):
         first = plan.grants[0]
         self.assertEqual(first.workload_id, "high")
 
+    # --- capacity accounting: CPU and memory are separate budgets (K23) ---
+
+    def test_memory_budget_is_enforced(self):
+        """Plenty of CPU but no memory room: the node must not be used."""
+        _node(self.snap, "fat-cpu", cpu=100_000, mem=64)   # 64 < the 128 the pod needs
+        _wl(self.snap, "w1", 1, cpu=100, mem=128)
+        plan = self.sched.compute(self.snap, now=2000.0)
+        self.assertEqual(plan.grants, [], "memory overcommit was accepted")
+
+    def test_cpu_budget_is_enforced(self):
+        """Plenty of memory but no CPU room: the node must not be used."""
+        _node(self.snap, "fat-mem", cpu=150, mem=1_000_000)
+        _wl(self.snap, "w1", 1, cpu=100, mem=128)
+        plan = self.sched.compute(self.snap, now=2000.0)
+        self.assertEqual(len(plan.grants), 1)
+        # the second replica cannot fit: only 50 cpu remain
+        _wl(self.snap, "w2", 1, cpu=100, mem=128)
+        plan2 = self.sched.compute(self.snap, now=2000.0)
+        grants = [g for g in plan2.grants if g.workload_id == "w2"]
+        self.assertEqual(grants, [], "cpu overcommit was accepted")
+
+    def test_a_lease_count_is_not_a_cpu_budget(self):
+        """Regression: a node with many tiny leases must still be judged on real usage."""
+        from effective_scale.domain.models import Lease
+        from effective_scale.domain.states import LeaseState
+        _node(self.snap, "busy", cpu=10_000, mem=10_000)
+        filler = _wl(self.snap, "filler", 6, cpu=10, mem=10)  # 6 tiny leases on one node
+        self.snap.workloads["filler"] = filler
+        for i in range(6):
+            self.snap.leases[f"f{i}"] = Lease(id=f"f{i}", workload_id="filler", namespace="ns",
+                                              node_id="busy", holder="h", nonce="n",
+                                              expires_at=9999, state=LeaseState.ACTIVE,
+                                              created_at=10.0 + i)
+        _wl(self.snap, "big", 1, cpu=9000, mem=9000)
+        plan = self.sched.compute(self.snap, now=2000.0)
+        grant = next(g for g in plan.grants if g.workload_id == "big")
+        self.assertEqual(grant.node_id, "busy", "6 leases x 10 units must leave room for 9000")
+
+    # --- each policy is real: none may fall back to another (GAP-AUDIT B-4) ---
+
+    def test_fifo_fills_earliest_created_node_first(self):
+        """FIFO is queue-like: fill the earliest node until it is full, then move on."""
+        _node(self.snap, "cli7", cpu=150, mem=1024)   # room for exactly one replica
+        _node(self.snap, "api2", cpu=1000, mem=1024)  # room for several
+        self.snap.nodes["api2"].created_at = 2000.0   # api2 joined later
+        _wl(self.snap, "w1", 2, cpu=100, mem=128, policy="fifo")
+        plan = self.sched.compute(self.snap, now=3000.0)
+        self.assertEqual([g.node_id for g in plan.grants], ["cli7", "api2"])
+
+    def test_fifo_packs_the_earliest_node_by_default(self):
+        """Queue semantics: two replicas that fit on the oldest node both go there."""
+        _node(self.snap, "cli7", cpu=1000, mem=1024)
+        _node(self.snap, "api2", cpu=1000, mem=1024)
+        self.snap.nodes["api2"].created_at = 2000.0
+        _wl(self.snap, "w1", 2, cpu=100, mem=128, policy="fifo")
+        plan = self.sched.compute(self.snap, now=3000.0)
+        self.assertEqual([g.node_id for g in plan.grants], ["cli7", "cli7"])
+
+    def test_fifo_is_not_bin_pack(self):
+        """Pin the difference: bin-pack orders by free capacity, FIFO by node age."""
+        _node(self.snap, "aaa", cpu=1000, mem=1024)   # alphabetically first
+        _node(self.snap, "zzz", cpu=1000, mem=1024)
+        self.snap.nodes["aaa"].created_at = 2000.0
+        self.snap.nodes["zzz"].created_at = 1000.0    # older
+        _wl(self.snap, "fifo-wl", 1, policy="fifo")
+        _wl(self.snap, "pack-wl", 1, policy="bin_pack")
+        plan = self.sched.compute(self.snap, now=3000.0)
+        picked = {g.workload_id: g.node_id for g in plan.grants}
+        self.assertEqual(picked["fifo-wl"], "zzz", "fifo must follow node age")
+        self.assertNotEqual(picked["pack-wl"], "zzz",
+                            "bin_pack must not silently behave like fifo")
+
+    def test_round_robin_spreads_by_lease_count(self):
+        """A node already holding a lease is skipped in favour of an idle one."""
+        from effective_scale.domain.models import Lease
+        from effective_scale.domain.states import LeaseState
+        _node(self.snap, "a")
+        _node(self.snap, "b")
+        other = _wl(self.snap, "other", 1)
+        self.snap.leases["l1"] = Lease(id="l1", workload_id="other", namespace="ns", node_id="a",
+                                       holder="h", nonce="n", expires_at=9999,
+                                       state=LeaseState.ACTIVE, created_at=10.0)
+        self.assertEqual(other.id, "other")
+        _wl(self.snap, "w1", 1, policy="round_robin")
+        plan = self.sched.compute(self.snap, now=3000.0)
+        grant = next(g for g in plan.grants if g.workload_id == "w1")
+        self.assertEqual(grant.node_id, "b")
+
+    def test_priority_prefers_the_node_already_running_this_workload(self):
+        """Affinity keeps a high-priority service together instead of churning nodes."""
+        from effective_scale.domain.models import Lease
+        from effective_scale.domain.states import LeaseState
+        _node(self.snap, "a")
+        _node(self.snap, "b")
+        _node(self.snap, "c")
+        wl = _wl(self.snap, "w1", 2, policy="priority", priority=10)
+        self.snap.leases["l1"] = Lease(id="l1", workload_id=wl.id, namespace="ns", node_id="c",
+                                       holder="h", nonce="n", expires_at=9999,
+                                       state=LeaseState.ACTIVE, created_at=10.0)
+        plan = self.sched.compute(self.snap, now=3000.0)
+        grant = next(g for g in plan.grants if g.workload_id == wl.id)
+        self.assertEqual(grant.node_id, "c", "priority must reuse a host already running the service")
+
+    def test_unknown_legacy_policy_is_deterministic(self):
+        """Older records may carry a policy this build no longer knows: never crash, never random."""
+        _node(self.snap, "a")
+        _node(self.snap, "b")
+        wl = _wl(self.snap, "w1", 1)
+        wl.policy = "legacy_policy_from_a_future_build"  # type: ignore[assignment]
+        first = self.sched.compute(self.snap, now=3000.0)
+        second = self.sched.compute(self.snap, now=3000.0)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first.grants), 1)
+
     def test_no_grants_when_desired_met(self):
         _node(self.snap, "a", cpu=1000, mem=1024)
         wl = _wl(self.snap, "w1", 1)

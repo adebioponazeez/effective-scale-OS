@@ -83,14 +83,27 @@ class EffectiveScaleTransport:
 
     # ------------------------------------------------------------------ API
 
-    async def submit(self, task: Task) -> dict:
-        """Durably record the capability plan as an idempotent workflow."""
+    async def submit(self, task: Task, *, workload_id: str | None = None,
+                     idem_key: str | None = None) -> dict:
+        """Durably record the capability plan as an idempotent workflow.
+
+        Two node shapes are supported:
+          * `workload_id` -> lease-bound nodes a SAF worker claims and completes
+            through the external worker protocol (ADR-006) — real execution;
+          * no workload  -> fire-and-continue event nodes (the plan is recorded
+            and observable, but nothing executes it) — the original V0 contract.
+        """
         caps = task.required_capabilities or ["cap://general/agent/execute"]
+        # The capability plan is a chain in declared order: capability i+1
+        # depends on i. Without this, a worker pool could run `run tests`
+        # before `refactor` — the plan would be recorded but not respected.
         nodes = [
             {
                 "id": f"cap-{i}",
                 "name": cap,
-                "exec": {"topic": f"saf.task.{slug(cap)}"},
+                "depends_on": [f"cap-{i - 1}"] if i else [],
+                "exec": ({"workload_id": workload_id} if workload_id
+                         else {"topic": f"saf.task.{slug(cap)}"}),
                 "timeout": self.node_timeout_s,
                 "retry": {
                     "max": self.retry_max,
@@ -108,7 +121,7 @@ class EffectiveScaleTransport:
             "timeout": self.node_timeout_s * max(1, len(nodes)),
             "dead_letter": True,
         }
-        key = idempotency_key(task)
+        key = idem_key or idempotency_key(task)
         status, body = await self._request(
             "POST", "/v1/workflows", body=workflow, idempotency_key=key
         )
@@ -128,6 +141,58 @@ class EffectiveScaleTransport:
         if status != 200:
             raise TransportError(f"workflow status failed ({status})", status=status, body=body)
         return body.get("workflow", body)
+
+    # ------------------------------------------- external worker protocol (ADR-006)
+
+    async def list_attempts(self, *, claimable: bool | None = None, state: str | None = "running",
+                            workflow_id: str | None = None, limit: int = 10) -> list[dict]:
+        """Discover work. `claimable=True` returns only unclaimed lease-bound attempts."""
+        query = [f"limit={int(limit)}"]
+        if claimable is not None:
+            query.append(f"claimable={'true' if claimable else 'false'}")
+        if state:
+            query.append(f"state={state}")
+        if workflow_id:
+            query.append(f"workflow_id={workflow_id}")
+        status, body = await self._request("GET", f"/v1/attempts?{'&'.join(query)}")
+        if status != 200:
+            raise TransportError(f"attempt list failed ({status})", status=status, body=body)
+        return list(body.get("attempts", []))
+
+    async def claim_attempt(self, attempt_id: str, *, worker_id: str,
+                            ttl_seconds: float | None = None) -> dict:
+        payload = {"worker_id": worker_id}
+        if ttl_seconds:
+            payload["ttl_seconds"] = float(ttl_seconds)
+        status, body = await self._request("POST", f"/v1/attempts/{attempt_id}/claim", body=payload)
+        if status != 200:
+            raise TransportError(f"claim failed ({status})", status=status, body=body)
+        return body
+
+    async def heartbeat_attempt(self, attempt_id: str, *, worker_id: str, nonce: str,
+                                ttl_seconds: float | None = None) -> dict:
+        payload = {"worker_id": worker_id, "nonce": nonce}
+        if ttl_seconds:
+            payload["ttl_seconds"] = float(ttl_seconds)
+        status, body = await self._request("POST", f"/v1/attempts/{attempt_id}/heartbeat",
+                                           body=payload)
+        if status != 200:
+            raise TransportError(f"heartbeat failed ({status})", status=status, body=body)
+        return body
+
+    async def complete_attempt(self, attempt_id: str, *, ok: bool, worker_id: str,
+                               nonce: str, error: str | None = None,
+                               result: dict | None = None) -> dict:
+        payload: dict = {"ok": bool(ok), "worker_id": worker_id, "nonce": nonce}
+        if error:
+            payload["error"] = error
+        if result is not None:
+            payload["result"] = result
+        status, body = await self._request("POST", f"/v1/attempts/{attempt_id}/complete",
+                                           body=payload)
+        if status != 200:
+            raise TransportError(f"completion rejected ({status})", status=status, body=body)
+        return body
 
     async def health(self) -> dict:
         status, body = await self._request("GET", "/v1/health/ready")
