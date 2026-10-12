@@ -310,6 +310,32 @@ def check_capabilities(ctx) -> list[Finding]:
     return findings
 
 
+def check_capability_map(ctx) -> list[Finding]:
+    """C-capmap: CAPABILITIES.md lists exactly the capabilities the ontology declares.
+
+    A build map is prose the moment nothing checks it: it either forgets a capability
+    that landed (readers build less than they could) or keeps advertising one that was
+    removed (readers build on sand). Both are drift, so both fail the build.
+    """
+    findings: list[Finding] = []
+    path = ROOT / "CAPABILITIES.md"
+    if not path.exists():
+        return [Finding("capmap", "C-capmap:missing", "medium",
+                        "CAPABILITIES.md is absent", "the build map must exist and be audited")]
+    text = path.read_text(encoding="utf-8")
+    documented = set(re.findall(r"cap://[a-z0-9_-]+(?:/[a-z0-9_-]+)*", text))
+    declared = {c["id"] for c in ctx["ontology"]["capabilities"]}
+
+    for cap in sorted(declared - documented):
+        findings.append(Finding("capmap", f"C-capmap:undocumented:{cap}", "medium",
+                                "declared capability missing from the build map", cap))
+    for cap in sorted(documented - declared):
+        findings.append(Finding("capmap", f"C-capmap:undeclared:{cap}", "high",
+                                "CAPABILITIES.md advertises a capability the ontology never "
+                                "declares", cap))
+    return findings
+
+
 def _all_modules() -> dict[str, Path]:
     modules: dict[str, Path] = {}
     for path in python_files(SAF / "saf"):
@@ -593,7 +619,8 @@ def check_test_counts(ctx) -> list[Finding]:
 
 CHECKS = [check_stdlib_only, check_routes, check_states, check_persisters,
           check_versions, check_operations,
-          check_capabilities, check_dead_modules, check_invariants, check_test_counts]
+          check_capabilities, check_dead_modules, check_invariants, check_test_counts,
+          check_capability_map]
 
 
 # --------------------------------------------------------------------------- runner

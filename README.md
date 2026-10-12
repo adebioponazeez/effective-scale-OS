@@ -4,7 +4,9 @@
 Single-process "operating system for workloads" — REST control plane, compute plane (workloads,
 nodes, leases, external workers), DAG workflow engine, partitioned event bus, resilience kit and
 observability — with a bundled agent fabric (`sovereign-agent-fabric-v20`, SAF 0.2.0) that executes
-capability-first agent plans against it.
+capability-first agent plans against it. **What you can build with it is mapped in
+[`CAPABILITIES.md`](CAPABILITIES.md)** — twelve working recipes, the capability catalog, the
+extension seam, and the honest limits.
 
 **Status as of 2026-10-01 — kernel v0.5.0, SAF 0.2.0, PR #2 open.** Every claim below is
 reproducible with the command next to it; nothing here rests on memory or intention. The exhaustive
@@ -16,8 +18,8 @@ audit is in [`GAP-AUDIT.md`](GAP-AUDIT.md); the machine-readable system model is
 | Claim | Command | Result |
 |---|---|---|
 | The repo passes its own audit | `python3 tools/audit.py` | **0 unexpected findings**, 1 accepted (tracked, burn-down-able) |
-| Kernel suite | `make test` | **144 tests OK** (unit, integration, concurrency, chaos, CLI, audit, soak) |
-| SAF suite | `make test-saf` | **143 cases passed** (132 statically defined; `parametrize` expands a few) |
+| Kernel suite | `make test` | **146 tests OK** (unit, integration, concurrency, chaos, CLI, audit, soak) |
+| SAF suite | `make test-saf` | **148 cases passed** (137 statically defined; `parametrize` expands a few) |
 | Resilience kit has consumers | `tests/test_writer_isolation.py` | client writes are bounded by a bulkhead + breaker: saturated backlog or repeated infra failure ⇒ `503 overloaded` fast-fail; loops/readiness bypass both (`K24`) |
 | Scheduler capacity accounting | `tests/test_scheduler.py` | CPU and memory are separate budgets; regression tests fail against the pre-fix code (`K23`) |
 | Placement policies | `tests/test_scheduler.py` | `fifo`, `priority`, `bin_pack`, `round_robin` are four distinct behaviours — four of the six policy tests fail against the old fall-through |
@@ -42,10 +44,14 @@ nothing able to fail on them**. That is now fixed mechanically:
   state-machine transition tables, invariants K1–K22 (each naming its enforcement point *and* the
   test that proves it), capability declarations, product versions, and a declared-dormant
   inventory with revisit triggers.
-- **`tools/audit.py`** — 10 checks comparing code ↔ ontology ↔ docs: stdlib-only, API routes in
+- **`CAPABILITIES.md`** — the build map: twelve working recipes, the declared capability catalog,
+  the extension seam for adding a runtime, and the honest boundary of what does not exist yet. Its
+  inventory is enforced by `C-capmap` (here ↔ ontology, both directions) so it cannot drift into
+  advertising a capability that was removed or hide one that landed.
+- **`tools/audit.py`** — 11 checks comparing code ↔ ontology ↔ docs: stdlib-only, API routes in
   both directions, state tables, persisters, version truth (sources *and* deploy image tags),
-  capabilities, reachability (AST import graph + BFS), invariant coverage, README test counts, and
-  **operations supervision (`C-ops`)**.
+  capabilities, reachability (AST import graph + BFS), invariant coverage, README test counts,
+  **the build map (`C-capmap`)**, and **operations supervision (`C-ops`)**.
 - **`ontology/known-gaps.json`** — the accept-list of audited gaps. **It may only shrink**: a gap
   that stops firing must be deleted, and the suite fails if it is not.
 - **`tests/test_audit.py`** — the ratchet is itself tested, including *negative* tests that inject
@@ -107,7 +113,7 @@ now a build artifact you can run, not a document that can go missing.
 
 ```bash
 make audit         # code ↔ ontology ↔ docs ↔ deploy: 0 unexpected findings, 1 tracked gap
-make test          # kernel suite (144 tests: unit, integration, concurrency, chaos, CLI, audit, soak)
+make test          # kernel suite (146 tests: unit, integration, concurrency, chaos, CLI, audit, soak)
 make soak          # longevity: sustained load, bounded state, restart without duplicates
 make test-all      # kernel + SAF subproject suites
 make ontology      # regenerate docs/11-ontology.md from ontology/system.json
@@ -135,7 +141,7 @@ all with restart policy and probes wired to the honest health routes, enforced b
 
 ```
 ontology/        Machine-readable system model + the accepted-gap ledger (may only shrink)
-tools/audit.py   The audit harness: 10 checks, stable finding ids, --json/--update-gaps/--render-ontology
+tools/audit.py   The audit harness: 11 checks, stable finding ids, --json/--update-gaps/--render-ontology
 docs/            Design package: requirements, architecture, edge cases, ADRs, API reference, ontology view
 src/effective_scale/   Hexagonal kernel (domain/ports/adapters/core/api) — stdlib-only by contract
 tests/           Unit, integration, concurrency, chaos, CLI, soak and audit tests

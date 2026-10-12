@@ -12,6 +12,8 @@ KEYWORDS = {
     r"\bgit\b": ["cap://software/git/operate"],
     r"\bcommit\b": ["cap://software/git/operate"],
     r"\bresearch\b": ["cap://research/web"],
+    r"\bfetch(?:es|ing)?\b": ["cap://research/web"],
+    r"\bdown?loads?\b": ["cap://research/web"],
     r"\bbrowser\b": ["cap://interaction/browser"],
     r"\bverify(?:ing|ied|y)?\b": ["cap://verification/save-proof"],
 }
@@ -28,6 +30,12 @@ _MESSAGE_RE = re.compile(r"""["']([^"']{1,200})["']""")
 _URL_RE = re.compile(r"""https?://[^\s"'<>\]\[]+""")
 MAX_URLS_PER_INTENT = 10
 
+# A URL in the intent is the strongest signal that the caller wants a fetch — "fetch
+# https://x" used to fall through to cap://general/agent/execute, which needs a CLI agent
+# installed, so the work was refused while saf://web sat idle. A URL that appears *inside* a
+# quoted segment is excluded: that is a git commit message ("fix: see https://x"), not a fetch.
+_QUOTED_SEGMENT_RE = re.compile(r"""[\"'][^\"']*[\"']""")
+
 
 def compile_intent(intent: str) -> Task:
     text = intent.lower()
@@ -35,6 +43,8 @@ def compile_intent(intent: str) -> Task:
     for pattern, ids in KEYWORDS.items():
         if re.search(pattern, text):
             caps.extend(ids)
+    if _URL_RE.search(_QUOTED_SEGMENT_RE.sub(" ", intent)):
+        caps.append("cap://research/web")  # a bare URL is a fetch request, even unlabelled
     capabilities = list(dict.fromkeys(caps or _FALLBACK))
     constraints: dict = {}
     if "cap://software/git/operate" in capabilities:

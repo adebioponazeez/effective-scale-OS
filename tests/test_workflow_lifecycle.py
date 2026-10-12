@@ -152,7 +152,11 @@ class WorkflowLifecycleTest(unittest.TestCase):
         status, body, _ = self.harness.request(
             "POST", f"/v1/workflows/{wid}/retry-node/only", {}, token=self.token)
         self.assertEqual(status, 200, body)
-        self.assertEqual(self._node(wid, "only")["status"], "pending")
+        # The engine may dispatch the revived node before this read: asserting "pending"
+        # would assert a race won by the reader. The invariant is that the node is
+        # schedulable again — never left in a terminal state.
+        self.assertIn(self._node(wid, "only")["status"], ("pending", "dispatched", "running"),
+                      "a retried node must be schedulable again")
         self.assertEqual(self._workflow(wid)["status"], "running",
                          "retrying a node must reopen the workflow")
 

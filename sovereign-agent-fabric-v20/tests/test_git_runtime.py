@@ -198,3 +198,24 @@ def compile_with_message(request):
     task = compile_intent("git commit the changes")
     task.constraints.update(request.task.constraints)
     return task
+
+def test_commit_failure_carries_gits_own_explanation(tmp_path):
+    """A failed commit must be debuggable: git's stderr travels with the evidence.
+
+    Repo deliberately has no user.email/user.name, so `git commit` refuses. The
+    runtime used to return `summary="git commit failed"` and empty evidence — the
+    operator could not tell a missing identity from a failing hook or an index lock.
+    """
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    (workspace / "app.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+
+    result = _run(_request(workspace, message="fix: patch"))
+    assert result.ok is False
+    assert "commit_failed" == result.evidence[0]["error"]
+    tail = result.evidence[0]["stderr_tail"]
+    assert tail and "identity" in tail.lower(), result.evidence
+    assert "identity" in result.summary.lower(), result.summary
+    assert len(tail) <= 400, "git could be chatty; evidence must stay bounded"

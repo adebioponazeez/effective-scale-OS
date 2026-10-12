@@ -30,6 +30,7 @@ GIT_CAPABILITIES = ["cap://software/git/operate"]
 
 DEFAULT_MAX_MESSAGE_CHARS = 200
 HARD_MAX_MESSAGE_CHARS = 2000
+STDERR_TAIL_CHARS = 400   # enough to carry git's own explanation into the evidence
 OPERATIONS = {"status", "commit"}
 
 
@@ -106,19 +107,21 @@ class GitRuntime(AgentRuntime):
                     summary="paths must be workspace-relative and must not escape the repository",
                     evidence=[{"kind": "git-operate", "operation": "commit",
                                "error": "invalid_paths"}])
-            added = await self._run(repo, "add", "--", *paths)
+            add_rc, added, add_err = await self._run_capture(repo, "add", "--", *paths)
         else:
             # `git add -A` would stage the fabric's own state directory (.saf by default:
             # evidence, backups, outbox). Never commit our own bookkeeping into the user's repo.
             exclude = _state_exclusion(repo, state_dir)
             if exclude:
-                added = await self._run(repo, "add", "-A", "--", ".", f":(exclude){exclude}")
+                add_rc, added, add_err = await self._run_capture(
+                    repo, "add", "-A", "--", ".", f":(exclude){exclude}")
             else:
-                added = await self._run(repo, "add", "-A")
-        if added is None:
-            return AgentResult(ok=False, summary="git add failed",
+                add_rc, added, add_err = await self._run_capture(repo, "add", "-A")
+        if add_rc != 0:
+            return AgentResult(ok=False, summary=_failure_summary("git add failed", add_err),
                                evidence=[{"kind": "git-operate", "operation": "commit",
-                                          "error": "add_failed"}])
+                                          "error": "add_failed",
+                                          "stderr_tail": add_err.strip() or None}])
 
         staged = await self._run(repo, "diff", "--cached", "--name-only")
         if not (staged or "").strip():
@@ -129,12 +132,15 @@ class GitRuntime(AgentRuntime):
 
         started = time.monotonic()
         # `-m <message>` is a single argv element: the message is data, never syntax
-        committed = await self._run(repo, "commit", "-m", message)
+        commit_rc, committed, commit_err = await self._run_capture(repo, "commit", "-m", message)
         duration = time.monotonic() - started
-        if committed is None:
-            return AgentResult(ok=False, summary="git commit failed",
+        if commit_rc != 0:
+            # git's own words are the only useful explanation (missing identity, hooks,
+            # index lock). Discarding them made a failed commit undebuggable.
+            return AgentResult(ok=False, summary=_failure_summary("git commit failed", commit_err),
                                evidence=[{"kind": "git-operate", "operation": "commit",
-                                          "error": "commit_failed"}])
+                                          "error": "commit_failed",
+                                          "stderr_tail": commit_err.strip() or None}])
         sha = (await self._run(repo, "rev-parse", "--short", "HEAD")) or ""
         files = [line for line in staged.splitlines() if line.strip()]
         return AgentResult(
@@ -157,6 +163,16 @@ class GitRuntime(AgentRuntime):
 
     async def _run(self, cwd: Path, *args: str) -> str | None:
         """Run one bounded git command. Returns stdout, or None on any failure."""
+        rc, out, _err = await self._run_capture(cwd, *args)
+        return out if rc == 0 else None
+
+    async def _run_capture(self, cwd: Path, *args: str) -> tuple[int, str, str]:
+        """Run one bounded git command; return `(rc, stdout, stderr_tail)`.
+
+        `rc < 0` means the command never produced a status (timeout, exec failure).
+        stderr is truncated to `STDERR_TAIL_CHARS` so a chatty hook cannot inflate
+        the evidence payload.
+        """
         argv = ["git", *args]
         try:
             proc = await asyncio.wait_for(
@@ -164,12 +180,18 @@ class GitRuntime(AgentRuntime):
                     *argv, cwd=str(cwd), stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE),
                 timeout=self.timeout_s)
-            out, _err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_s)
         except (asyncio.TimeoutError, OSError, ValueError):
-            return None
-        if proc.returncode != 0:
-            return None
-        return out.decode(errors="replace")[:self.max_output_chars]
+            return -1, "", ""
+        return (proc.returncode,
+                out.decode(errors="replace")[:self.max_output_chars],
+                err.decode(errors="replace")[:STDERR_TAIL_CHARS])
+
+
+def _failure_summary(prefix: str, stderr: str, *, limit: int = 200) -> str:
+    """Attach git's own explanation to the summary, single-line and bounded."""
+    detail = " ".join(stderr.split())[:limit]
+    return f"{prefix}: {detail}" if detail else prefix
 
 
 def _state_exclusion(repo: Path, state_dir: str) -> str:

@@ -270,3 +270,30 @@ def _sha_text(text):
 
     payload = text.encode() if isinstance(text, str) else text
     return hashlib.sha256(payload).hexdigest()
+
+def test_failed_step_keeps_structured_evidence(tmp_path):
+    """Failure is when structure matters most: evidence must survive the fall-through."""
+    registry = Registry()
+    registry.register("saf://broken", _BrokenRuntime())
+    executor = make_executor(tmp_path, registry=registry)
+    result = run(executor.execute(compile_intent("git commit")))
+
+    step = result.steps[0]
+    assert step.status == "failed", step
+    assert step.evidence, "a failed step must not drop its structured reason"
+    assert step.evidence[0]["error"] == "commit_failed"
+    assert step.attempts[-1]["reason"], "the fall-through trace must explain the refusal"
+
+
+class _BrokenRuntime(AgentRuntime):
+    """Minimal runtime whose only job is to fail with structure."""
+
+    resource_id = "saf://broken"
+    kind = "agent"
+    capability_ids = ["cap://software/git/operate"]
+    trust = 0.5
+
+    async def execute(self, request):
+        return AgentResult(ok=False, summary="git commit failed: identity unknown",
+                           evidence=[{"kind": "git-operate", "operation": "commit",
+                                      "error": "commit_failed", "stderr_tail": "identity unknown"}])

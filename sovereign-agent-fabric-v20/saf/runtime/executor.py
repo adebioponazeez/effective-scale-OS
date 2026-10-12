@@ -172,6 +172,11 @@ class CapabilityExecutor:
             step.resource_id = candidate.resource_id
             step.status = "failed"
             step.summary = outcome.summary
+            # A failed step is exactly when the caller needs structure: carry the
+            # runtime's evidence (error ids, stderr tails, exit codes) instead of
+            # leaving the operator with prose in `summary` and an empty list here.
+            step.evidence = list(outcome.evidence)
+            step.artifacts = list(outcome.artifacts)
             break
         else:
             step.status = "unavailable"

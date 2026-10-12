@@ -150,12 +150,16 @@ The rule "wired or deleted" was applied literally:
 
 | Suite | Tests | Statements | Coverage | Verdict |
 |---|---|---|---|---|
-| kernel (`make test`) | **144 OK** | 2870 | **90 %** | broad; `api/server.py` 82 % is the weakest real file (`__main__.py` is a subprocess-only shim) |
-| SAF (`make test-saf`) | **143 cases passed** (132 static) | 1700 | **92 %** | broad; `saf/cli/main.py` 83 % |
+| kernel (`make test`) | **146 OK** | 2870 | **90 %** | broad; `api/server.py` 82 % is the weakest real file (`__main__.py` is a subprocess-only shim) |
+| SAF (`make test-saf`) | **148 cases passed** (137 static) | 1700 | **92 %** | broad; `saf/cli/main.py` 83 % |
 | floors | `make coverage` | — | fails below **88 %** in either project | the number can no longer drift silently |
 
 The coverage push that produced these numbers also *found defects* — reported in section G, not
 swept into a percentage.
+
+| G-5 | S3 → FIXED | **A failed git operation discarded git's own explanation.** `_run` returned `None` on any non-zero exit and threw stderr away, so a refused commit surfaced as `summary="git commit failed"` with empty evidence — indistinguishable between a missing `user.email`, a failing hook and a stale index lock | Found by writing recipe 2 of `CAPABILITIES.md` against a repo with no git identity: the operator saw failure with no cause | `_run_capture()` keeps a bounded (`STDERR_TAIL_CHARS=400`) stderr tail; failures carry `error` + `stderr_tail` id and a single-line summary with git's words. Git identity is deliberately *not* fabricated | `test_commit_failure_carries_gits_own_explanation` (fails pre-fix); live output now reads `git commit failed: Author identity unknown …` |
+| G-6 | S3 → FIXED | **A failed execution step dropped its structured evidence.** The executor copied `evidence`/`artifacts` onto the step only on success; on failure the caller got prose in `summary` and `evidence: []` — exactly when structure is most needed | Same run as G-5: `steps[0].evidence` was empty while the runtime had returned an error id | Failure path now carries `outcome.evidence` and `outcome.artifacts` onto the step | `test_failed_step_keeps_structured_evidence` (fails pre-fix) |
+| G-7 | S2 → FIXED | **A bare URL did not route to the web runtime.** `cap://research/web` was selected only by the literal word "research" (later "fetch"/"download"), so `fetch https://…` — the most explicit possible request — fell through to `cap://general/agent/execute`, which needs a CLI agent installed. The work was refused while `saf://web` sat idle: a capability that exists but is unreachable by the natural phrasing | Found writing recipe 3 of `CAPABILITIES.md`: `saf execute "fetch http://…"` returned `unavailable` with `cap://general/agent/execute` | A URL outside a quoted segment is now itself a web-intent signal (quoted segments stay git commit messages: `git commit "fix: see https://x"` is *not* a fetch); `fetch`/`download` added as keywords | `tests/test_core.py`: bare-URL routing, quoted-message exclusion, quoted-URL still fetching; live CLI: `fetch http://127.0.0.1:PORT/page` → `succeeded` with `kind: web-fetch` evidence |
 
 ### F. Delivery pipeline
 
@@ -218,19 +222,19 @@ unreal. The levers below are ordered by return-per-hour, and each is a small, te
 
 ```bash
 cd /home/user/effective-scale-OS
-python3 tools/audit.py                            # 0 unexpected findings; 1 known (accepted) gap (10 checks)
+python3 tools/audit.py                            # 0 unexpected findings; 1 known (accepted) gap (11 checks)
 python3 tools/audit.py --json                     # same, machine-readable
 python3 tools/audit.py --render-ontology          # regenerate docs/11-ontology.md
-PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 144 tests OK
+PYTHONPATH=src python3 -m unittest discover -s . -p 'test_*.py' -q    # 146 tests OK
 PYTHONPATH=src python3 -m unittest tests.test_soak -v                 # == make soak
-cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 143 cases passed (132 static)
+cd sovereign-agent-fabric-v20 && PYTHONPATH=. python3 -m pytest -q     # 148 cases passed (137 static)
 pip install --break-system-packages coverage      # pip is PEP-668 managed in this sandbox
 cd .. && make coverage                            # kernel 90 % / SAF 92 %; fails below the 88 % floor
 gh pr list --state all; gh issue list --state all  # 2 PRs, 0 issues — the evidence for Part 1
 ```
 
-Post-slice numbers (2026-10-01): kernel **144 tests** (was 87), SAF **132 tests** (was 64),
-entrypoints `main.py` **90 %** and `saf/cli/main.py` **83 %** (both were 0 %), audit **10 checks**
+Post-slice numbers (2026-10-01): kernel **146 tests** (was 87), SAF **137 tests** (was 64),
+entrypoints `main.py` **90 %** and `saf/cli/main.py` **83 %** (both were 0 %), audit **11 checks**
 (was 8), supervision verified across **5 deploy artifacts** by `C-ops`, scheduler capacity
 accounting fixed and pinned by **K23** (see A-7), coverage floors enforced by `make coverage`
 (see E and G).

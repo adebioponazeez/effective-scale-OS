@@ -157,7 +157,7 @@ The numbers in §6 are a point-in-time record of slice 2. Live numbers now come 
   branch: doctor, capabilities, resources+stats, help, `run` offline (queued vs `--no-queue`),
   unreachable-kernel `sync`, empty-ledger `verify`/`ledger`, no-rollback-point `rollback`, an
   unimplemented capability (`interaction/browser`, the last known gap) exiting 2, and a full
-  `execute → verify → ledger` lifecycle. SAF suite: **132 tests** (143 cases), **92 % statement
+  `execute → verify → ledger` lifecycle. SAF suite: **137 tests** (148 cases), **92 % statement
   coverage** — see the root `README.md` for live numbers; the floors are enforced by
   `make coverage`.
 - **`saf sync` no longer reports "ok" while deferring everything**: a deferred entry now yields

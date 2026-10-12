@@ -121,6 +121,40 @@ class AuditTest(unittest.TestCase):
         finally:
             _json.dumps(original)  # untouched on disk; nothing to restore
 
+    def test_capability_map_drift_is_detected_both_ways(self):
+        """The build map is prose unless it can fail: test both directions of drift."""
+        capmap = ROOT / "CAPABILITIES.md"
+        original = capmap.read_text(encoding="utf-8")
+        ontology = audit.load_ontology()
+        try:
+            # (a) a capability that landed but never reached the map
+            capmap.write_text(original + "\nHidden: cap://software/ghost/never-declared\n",
+                              encoding="utf-8")
+            findings = audit.check_capability_map({"ontology": ontology})
+            self.assertTrue(any("C-capmap:undeclared" in f.id for f in findings),
+                            [f.id for f in findings])
+
+            # (b) the map omits a declared capability
+            trimmed = "\n".join(line for line in original.splitlines()
+                                 if "cap://research/web" not in line)
+            capmap.write_text(trimmed, encoding="utf-8")
+            findings = audit.check_capability_map({"ontology": ontology})
+            self.assertTrue(any("C-capmap:undocumented:cap://research/web" in f.id
+                                for f in findings), [f.id for f in findings])
+        finally:
+            capmap.write_text(original, encoding="utf-8")
+
+    def test_capability_map_check_reports_an_absent_file(self):
+        capmap = ROOT / "CAPABILITIES.md"
+        original = capmap.read_text(encoding="utf-8")
+        try:
+            capmap.unlink()
+            findings = audit.check_capability_map({"ontology": audit.load_ontology()})
+            self.assertTrue(any(f.id == "C-capmap:missing" for f in findings),
+                            [f.id for f in findings])
+        finally:
+            capmap.write_text(original, encoding="utf-8")
+
     def test_operations_check_detects_a_missing_probe(self):
         """Supervision wiring is a requirement, not a nicety: remove it and the audit must fire."""
         compose = ROOT / "docker-compose.yml"

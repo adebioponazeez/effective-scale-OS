@@ -32,6 +32,34 @@ class TestCompilerKeywords(unittest.TestCase):
         many = compile_intent("research " + " ".join(f"https://example.com/{i}" for i in range(30)))
         self.assertEqual(len(many.constraints["urls"]), MAX_URLS_PER_INTENT)
 
+    def test_a_bare_url_is_a_fetch_intent(self):
+        """A URL is the strongest fetch signal: routing it to a CLI-only capability
+        refuses work that saf://web could do."""
+        from saf.core.compiler import compile_intent
+
+        for intent in ("fetch https://example.com/a",
+                       "download https://example.com/a",
+                       "get the page at https://example.com/a"):
+            task = compile_intent(intent)
+            self.assertEqual(task.required_capabilities, ["cap://research/web"], intent)
+            self.assertEqual(task.constraints["urls"], ["https://example.com/a"], intent)
+
+    def test_a_url_inside_a_commit_message_is_not_a_fetch(self):
+        """Quoted segments are git message text, not fetch targets."""
+        from saf.core.compiler import compile_intent
+
+        task = compile_intent('git commit "fix: see https://example.com/a"')
+        self.assertEqual(task.required_capabilities, ["cap://software/git/operate"])
+        self.assertEqual(task.constraints["message"], "fix: see https://example.com/a")
+        self.assertNotIn("urls", task.constraints)
+
+    def test_quoting_a_url_still_fetches_it(self):
+        from saf.core.compiler import compile_intent
+
+        task = compile_intent('fetch "https://example.com/a"')
+        self.assertEqual(task.required_capabilities, ["cap://research/web"])
+        self.assertEqual(task.constraints["urls"], ["https://example.com/a"])
+
     def test_research_without_urls_has_no_constraint(self):
         from saf.core.compiler import compile_intent
 
